@@ -1,0 +1,7 @@
+# editors.
+.idea/
+.vscode/
+
+# trash.
+.DS_Store
+

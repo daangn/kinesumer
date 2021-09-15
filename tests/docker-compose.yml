@@ -1,0 +1,9 @@
+version: "3"
+services:
+  localstack:
+    image: localstack/localstack
+    ports:
+      - "14566:4566"
+    environment:
+      SERVICES: kinesis,dynamodb
+      DEFAULT_REGION: ap-northeast-2

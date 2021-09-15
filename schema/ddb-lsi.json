@@ -1,0 +1,18 @@
+[
+  {
+    "IndexName": "index-client-key-last-update",
+    "KeySchema": [
+      {
+        "AttributeName": "pk",
+        "KeyType": "HASH"
+      },
+      {
+        "AttributeName": "last_update",
+        "KeyType": "RANGE"
+      }
+    ],
+    "Projection": {
+      "ProjectionType": "KEYS_ONLY"
+    }
+  }
+]
