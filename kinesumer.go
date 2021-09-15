@@ -37,7 +37,10 @@ type Config struct {
 	// Kinesis configs.
 	KinesisRegion   string
 	KinesisEndpoint string // Only for local server.
-	RoleARN         string
+	// If you want to consume messages from Kinesis in a different account,
+	// you need to set up the IAM role to access to target account, and pass the role arn here.
+	// Reference: https://docs.aws.amazon.com/kinesisanalytics/latest/java/examples-cross.html.
+	RoleARN string
 
 	// State store configs.
 	DynamoDBRegion   string
