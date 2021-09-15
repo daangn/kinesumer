@@ -20,5 +20,11 @@ jobs:
       - uses: actions/setup-go@v1
         with:
           go-version: "1.17"
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: "aws-access-key-id"
+          aws-secret-access-key: "aws-secret-access-key"
+          aws-region: ap-northeast-2
       - name: Run all tests
         run: make test
