@@ -19,6 +19,8 @@ Kinesumer manages the state of the distributed clients with a database, called "
 ## Usage
 
 ```go
+package main
+
 import (
   "fmt"
   "time"
@@ -77,7 +79,7 @@ Following describes the process of how the Kinesumer works:
 - A client will fetch the full shard id list and client list from the state store. Then, divide the shard id list by the number of clients and assign a range of shard id corresponding to their index.
 - All clients including leader will repeat the above process. (so, we will be able to do automatic rebalancing for free.)
 - The leader client does more things than follower clients. It is responsible to sync the shard cache with the latest value, and pruning the outdated client list (to prevent the orphan shard range) periodically.
-- Whenever a client consumes messages from its assigned shard range, it updates a per-shard checkpoint with the sequence number of the last message read from each shard.
+- Whenever a client consumes messages from its assigned shards, it updates a per-shard checkpoint with the sequence number of the last message read from each shard.
 
 ## License
 
