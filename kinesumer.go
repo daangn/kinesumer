@@ -86,6 +86,12 @@ type Kinesumer struct {
 
 // NewKinesumer initializes and returns a new Kinesumer client.
 func NewKinesumer(cfg *Config) (*Kinesumer, error) {
+	if cfg.App == "" {
+		return nil, errors.WithStack(
+			errors.New("you must pass the app name"),
+		)
+	}
+
 	// Make unique client id.
 	id, err := os.Hostname()
 	if err != nil {
