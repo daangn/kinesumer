@@ -171,6 +171,10 @@ func (s *stateStore) PruneClients(ctx context.Context) error {
 		return errors.WithStack(err)
 	}
 
+	if len(outdated) == 0 {
+		return nil
+	}
+
 	var keys []dynamo.Keyed
 	for _, client := range outdated {
 		keys = append(
