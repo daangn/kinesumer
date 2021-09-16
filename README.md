@@ -65,7 +65,7 @@ func main() {
 
 ## How it works
 
-Kinesumer implements the client-side distributed cosumer group client without any communications between nodes (the consumer group clients). But, so, how do clients know the state of a set of consumer groups? To make the system works well, it uses a database to manage the states of the clients, shard cache and checkpoints, called `state store`. 
+Kinesumer implements the client-side distributed cosumer group client without any communications between nodes (consumer group clients). But, so, how do clients know the state of a set of consumer groups? In order for this system to work well, it uses a database to manage the states of the distributed clients, shard cache and checkpoints, called `state store`. 
 
 This picture describes the overview architecture of Kinesumer:
 
