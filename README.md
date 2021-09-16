@@ -16,6 +16,14 @@ Kinesumer is a Go client implementing a client-side distributed consumer group c
 
 Kinesumer manages the state of the distributed clients with a database, called "state store". It uses the DynamoDB as the state store, so you need to create a DynamoDB table first. Create a table with [LSI schema](./schema/ddb-lsi.json). See the details in [here](#how-it-works).
 
+> Current state store implementation supports multiple applications (you will pass the app name when initialize the client). So, if you already have a kinesumer state store, you don't need to create another state store table.
+
+### If your Kinesis stream is in different account
+
+> If you want to connect to Kinesis in a different account, you need to set up the IAM role to access to the target account, and pass the valid role arn when initialze the Kinesumer client. (`kinesumer.Config.RoleARN`)
+> 
+> Reference: https://docs.aws.amazon.com/kinesisanalytics/latest/java/examples-cross.html.
+
 ## Usage
 
 ```go
@@ -65,21 +73,18 @@ func main() {
 
 ## How it works
 
-Kinesumer implements the client-side distributed consumer group client without any communications between clients. Then, how do clients know the state of an entire system? The answer is the centralized database. In order for this system to work well, the Kinesumer uses a database to manage the states of the distributed clients, shard cache, and checkpoints, called `state store`. 
+Kinesumer implements the client-side distributed consumer group client without any communications between clients. Then, how do clients know the state of an entire system? The answer is the distributed key-value store. To evenly distribute the shard range among clients, the Kinesumer relies on a centralized database, called `state store`. State store manages the states of the distributed clients, shard cache, and checkpoints.
 
-This picture describes the overview architecture of Kinesumer:
+This is the overview architecture of Kinesumer:
 
 ![how-it-works](./docs/images/how-it-works.png)
 
-Following describes the process of how the Kinesumer works:
+Following explains how the Kinesumer works:
 
-- Clients register themselves to the state store and determine the leader client. The leader will be determined by the index of the list sorted by client id. And, zero indexes will be a leader.
-  - When rebalancing occurs, the leader could be changed.
-- All clients periodically ping the state store to indicate that they are active.
-- A client will fetch the full shard id list and client list from the state store. Then, divide the shard id list by the number of clients and assign a range of shard id corresponding to their index.
-- All clients including leader will repeat the above process. (so, we will be able to do automatic rebalancing for free.)
-- The leader client does more things than follower clients. It is responsible to sync the shard cache with the latest value, and pruning the outdated client list (to prevent the orphan shard range) periodically.
-- Whenever a client consumes messages from its assigned shards, it updates a per-shard checkpoint with the sequence number of the last message read from each shard.
+- **Leader election**: Clients register themselves to the state store and set their indexes. The index is determined by sorting all active client ids. And, a client who has zero index will be a leader. So, when clients are scaled or restarted, the leader could be changed.
+- **Shard rebalancing**: A client will fetch the full shard id list and client list from the state store. Then, divide the shard id list by the number of clients and assign a range of shard id corresponding to their index. All clients will repeat this process periodically.
+- **Synchronization**: The leader client is responsible to sync the shard cache with the latest shard list, and pruning the outdated client list (to prevent the orphan shard range) periodically.
+- **Offset checkpoint**: Whenever a client consumes messages from its assigned shards, it updates a per-shard checkpoint with the sequence number of the last message read from each shard.
 
 ## License
 
