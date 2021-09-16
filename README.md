@@ -29,43 +29,43 @@ Kinesumer manages the state of the distributed clients with a database, called "
 package main
 
 import (
-	"fmt"
-	"time"
+    "fmt"
+    "time"
 
-	"github.com/daangn/kinesumer"
+    "github.com/daangn/kinesumer"
 )
 
 func main() {
-	client, err := kinesumer.NewKinesumer(
-		&kinesumer.Config{
-			App:            "myapp",
-			KinesisRegion:  "ap-northeast-2",
-			DynamoDBRegion: "ap-northeast-2",
-			DynamoDBTable:  "kinesumer-state-store",
-			ScanLimit:      1500,
-			ScanTimeout:    2 * time.Second,
-		},
-	)
-	if err != nil {
-		// Error handling.
-	}
+    client, err := kinesumer.NewKinesumer(
+        &kinesumer.Config{
+            App:            "myapp",
+            KinesisRegion:  "ap-northeast-2",
+            DynamoDBRegion: "ap-northeast-2",
+            DynamoDBTable:  "kinesumer-state-store",
+            ScanLimit:      1500,
+            ScanTimeout:    2 * time.Second,
+        },
+    )
+    if err != nil {
+        // Error handling.
+    }
 
-	go func() {
-		for err := range client.Errors() {
-			// Error handling.
-		}
-	}()
+    go func() {
+        for err := range client.Errors() {
+            // Error handling.
+        }
+    }()
 
-	// Consume multiple streams.
-	// You can refresh the streams with `client.Refresh()` method.
-	records, err := client.Consume([]string{"stream1", "stream2"})
-	if err != nil {
-		// Error handling.
-	}
+    // Consume multiple streams.
+    // You can refresh the streams with `client.Refresh()` method.
+    records, err := client.Consume([]string{"stream1", "stream2"})
+    if err != nil {
+        // Error handling.
+    }
 
-	for record := range records {
-		fmt.Printf("record: %v\n", record)
-	}
+    for record := range records {
+        fmt.Printf("record: %v\n", record)
+    }
 }
 ```
 
