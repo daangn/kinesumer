@@ -266,8 +266,12 @@ func (k *Kinesumer) consumeOnce(stream, shardID string) {
 	}
 	defer k.streamToNextIters[stream].Store(shardID, output.NextShardIterator) // Update iter.
 
-	var lastSequence string
 	n := len(output.Records)
+	if n == 0 {
+		return
+	}
+
+	var lastSequence string
 	for i, record := range output.Records {
 		k.records <- &Record{
 			Stream: stream,
