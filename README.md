@@ -20,7 +20,7 @@ Kinesumer manages the state of the distributed clients with a database, called "
 
 ### If your Kinesis stream is in different account
 
-> If you want to connect to Kinesis in a different account, you need to set up the IAM role to access to the target account, and pass the role arn (`kinesumer.Config.RoleARN`) when initialze the Kinesumer client: [Reference](https://docs.aws.amazon.com/kinesisanalytics/latest/java/examples-cross.html)
+> If you want to connect to Kinesis in a different account, you need to set up the IAM role to access to the target account, and pass the role arn (`kinesumer.Config.RoleARN`) when initialze the Kinesumer client: [Reference](https://docs.aws.amazon.com/kinesisanalytics/latest/java/examples-cross.html).
 > 
 
 ## Usage
@@ -74,7 +74,7 @@ func main() {
 
 Kinesumer implements the client-side distributed consumer group client without any communications between clients. Then, how do clients know the state of an entire system? The answer is the distributed key-value store.
 
-To evenly distribute the shard range among clients, the Kinesumer relies on a centralized database, called "state store". State store manages the states of the distributed clients, shard cache, and checkpoints.
+To evenly distribute the shard range among clients, the Kinesumer relies on a centralized database, called `state store`. State store manages the states of the distributed clients, shard cache, and checkpoints.
 
 This is the overview architecture of Kinesumer:
 
