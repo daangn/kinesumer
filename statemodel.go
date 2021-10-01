@@ -17,7 +17,8 @@ const (
 type stateShardCache struct {
 	ShardCacheKey string   `dynamo:"pk,pk"`
 	Stream        string   `dynamo:"sk,sk"`
-	ShardIDs      []string `dynamo:"shard_ids"`
+	Shards        Shards   `dynamo:"shards"`
+	ShardIDs      []string `dynamo:"shard_ids"` // Deprecated.
 }
 
 func buildShardCacheKey(app string) string {

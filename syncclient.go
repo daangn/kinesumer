@@ -90,10 +90,10 @@ func (k *Kinesumer) syncShardInfo(ctx context.Context) error {
 func (k *Kinesumer) syncShardInfoForStream(
 	ctx context.Context, stream string, idx, numOfClient int,
 ) error {
-	shardIDs, err := k.stateStore.GetShardIDs(ctx, stream)
+	shards, err := k.stateStore.GetShards(ctx, stream)
 	if errors.Is(err, ErrNoShardCache) {
 		// If there are no cache, fetch shards from Kinesis directly.
-		shardIDs, err = k.listShardIDs(stream)
+		shards, err = k.listShards(stream)
 		if err != nil {
 			return errors.WithStack(err)
 		}
@@ -101,56 +101,59 @@ func (k *Kinesumer) syncShardInfoForStream(
 		return errors.WithStack(err)
 	}
 
-	// Assign a partial range of shard id list to client.
-	r := float64(len(shardIDs)) / float64(numOfClient)
-	splitInitIdx := int(math.Round(float64(idx) * r))
-	splitLastIdx := int(math.Round(float64(idx+1) * r))
-	newShardIDs := shardIDs[splitInitIdx:splitLastIdx]
+	numShards := len(shards)
 
-	if collection.EqualsSS(k.streamToShardIDs[stream], newShardIDs) {
+	// Assign a partial range of shard list to client.
+	r := float64(numShards) / float64(numOfClient)
+	splitStartIdx := int(math.Round(float64(idx) * r))
+	splitEndIdx := int(math.Round(float64(idx+1) * r))
+	newShards := shards[splitStartIdx:splitEndIdx]
+
+	if collection.EqualsSS(k.shards[stream].ids(), newShards.ids()) {
 		return nil
 	}
 
 	// Update client shard ids.
 	k.pause() // Pause the current consuming jobs before update shards.
-	k.streamToShardIDs[stream] = newShardIDs
+	k.shards[stream] = newShards
 	defer k.start() // Re-start the consuming jobs with updated shards.
 
 	// Sync next iterators map.
-	if _, ok := k.streamToNextIters[stream]; !ok {
-		k.streamToNextIters[stream] = &sync.Map{}
+	if _, ok := k.nextIters[stream]; !ok {
+		k.nextIters[stream] = &sync.Map{}
 	}
 
 	// Delete uninterested shard ids.
-	k.streamToNextIters[stream].Range(func(key, _ interface{}) bool {
-		if !collection.ContainsS(k.streamToShardIDs[stream], key.(string)) {
-			k.streamToNextIters[stream].Delete(key)
+	shardIDs := k.shards[stream].ids()
+	k.nextIters[stream].Range(func(key, _ interface{}) bool {
+		if !collection.ContainsS(shardIDs, key.(string)) {
+			k.nextIters[stream].Delete(key)
 		}
 		return true
 	})
 
 	// Sync shard check points.
-	seqMap, err := k.stateStore.ListCheckPoints(ctx, stream, k.streamToShardIDs[stream])
+	seqMap, err := k.stateStore.ListCheckPoints(ctx, stream, shardIDs)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
-	if _, ok := k.streamToCheckPoints[stream]; !ok {
-		k.streamToCheckPoints[stream] = &sync.Map{}
+	if _, ok := k.checkPoints[stream]; !ok {
+		k.checkPoints[stream] = &sync.Map{}
 	}
 
 	// Delete uninterested shard ids.
-	k.streamToCheckPoints[stream].Range(func(key, _ interface{}) bool {
+	k.checkPoints[stream].Range(func(key, _ interface{}) bool {
 		if _, ok := seqMap[key.(string)]; !ok {
-			k.streamToCheckPoints[stream].Delete(key)
+			k.checkPoints[stream].Delete(key)
 		}
 		return true
 	})
 	for id, seq := range seqMap {
-		k.streamToCheckPoints[stream].Store(id, seq)
+		k.checkPoints[stream].Store(id, seq)
 	}
 	log.Info().
 		Str("stream", stream).
-		Msgf("assigned shard id range: %v", k.streamToShardIDs[stream])
+		Msgf("shard id range: %v", shardIDs)
 	return nil
 }

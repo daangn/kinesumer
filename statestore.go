@@ -53,8 +53,10 @@ func newStateStore(cfg *Config) (*stateStore, error) {
 	}, nil
 }
 
-// GetShardIDs fetches a cached shard id list.
-func (s *stateStore) GetShardIDs(ctx context.Context, stream string) ([]string, error) {
+// GetShards fetches a cached shard list.
+func (s *stateStore) GetShards(
+	ctx context.Context, stream string,
+) (Shards, error) {
 	var (
 		key   = buildShardCacheKey(s.app)
 		cache *stateShardCache
@@ -69,16 +71,18 @@ func (s *stateStore) GetShardIDs(ctx context.Context, stream string) ([]string, 
 	} else if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	return cache.ShardIDs, nil
+	return cache.Shards, nil
 }
 
-// UpdateShardIDs updates a shard id list cache.
-func (s *stateStore) UpdateShardIDs(ctx context.Context, stream string, shardIDs []string) error {
+// UpdateShards updates a shard list cache.
+func (s *stateStore) UpdateShards(
+	ctx context.Context, stream string, shards Shards,
+) error {
 	key := buildShardCacheKey(s.app)
 	err := s.db.table.
 		Update("pk", key).
 		Range("sk", stream).
-		Set("shard_ids", shardIDs).
+		Set("shards", shards).
 		RunWithContext(ctx)
 	if err != nil {
 		return errors.WithStack(err)
@@ -110,7 +114,9 @@ func (s *stateStore) ListAllAliveClientIDs(ctx context.Context) ([]string, error
 }
 
 // RegisterClient registers a client to state store.
-func (s *stateStore) RegisterClient(ctx context.Context, clientID string) error {
+func (s *stateStore) RegisterClient(
+	ctx context.Context, clientID string,
+) error {
 	var (
 		key = buildClientKey(s.app)
 		now = time.Now()
@@ -127,7 +133,9 @@ func (s *stateStore) RegisterClient(ctx context.Context, clientID string) error 
 }
 
 // DeregisterClient de-registers a client from the state store.
-func (s *stateStore) DeregisterClient(ctx context.Context, clientID string) error {
+func (s *stateStore) DeregisterClient(
+	ctx context.Context, clientID string,
+) error {
 	key := buildClientKey(s.app)
 	err := s.db.table.
 		Delete("pk", key).
@@ -139,7 +147,9 @@ func (s *stateStore) DeregisterClient(ctx context.Context, clientID string) erro
 	return nil
 }
 
-func (s *stateStore) PingClientAliveness(ctx context.Context, clientID string) error {
+func (s *stateStore) PingClientAliveness(
+	ctx context.Context, clientID string,
+) error {
 	var (
 		key = buildClientKey(s.app)
 		now = time.Now()
@@ -195,7 +205,8 @@ func (s *stateStore) PruneClients(ctx context.Context) error {
 
 // ListCheckPoints fetches check point sequence numbers for multiple shards.
 func (s *stateStore) ListCheckPoints(
-	ctx context.Context, stream string, shardIDs []string) (map[string]string, error) {
+	ctx context.Context, stream string, shardIDs []string,
+) (map[string]string, error) {
 	if len(shardIDs) == 0 {
 		return nil, ErrEmptyShardIDs
 	}
@@ -229,7 +240,9 @@ func (s *stateStore) ListCheckPoints(
 }
 
 // UpdateCheckPoint updates the check point sequence number for a shard.
-func (s *stateStore) UpdateCheckPoint(ctx context.Context, stream, shardID, seq string) error {
+func (s *stateStore) UpdateCheckPoint(
+	ctx context.Context, stream, shardID, seq string,
+) error {
 	var (
 		key = buildCheckPointKey(s.app, stream)
 		now = time.Now()

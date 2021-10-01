@@ -14,14 +14,14 @@ const (
 
 func (k *Kinesumer) doLeadershipSyncShardIDs(ctx context.Context) error {
 	for _, stream := range k.streams {
-		shardIDs, err := k.listShardIDs(stream)
+		shards, err := k.listShards(stream)
 		if err != nil {
 			return errors.WithStack(err)
 		}
-		if collection.EqualsSS(k.streamToShardCaches[stream], shardIDs) {
+		if collection.EqualsSS(k.shardCaches[stream], shards.ids()) {
 			return nil
 		}
-		if err := k.stateStore.UpdateShardIDs(ctx, stream, shardIDs); err != nil {
+		if err := k.stateStore.UpdateShards(ctx, stream, shards); err != nil {
 			return errors.WithStack(err)
 		}
 	}

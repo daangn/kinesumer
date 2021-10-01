@@ -57,29 +57,59 @@ type Record struct {
 	*kinesis.Record
 }
 
+// Shard holds shard id and a flag of "CLOSED" state.
+type Shard struct {
+	ID     string
+	Closed bool
+}
+
+// Shards is a collection of Shard.
+type Shards []*Shard
+
+func (s Shards) ids() []string {
+	var ids []string
+	for _, shard := range s {
+		ids = append(ids, shard.ID)
+	}
+	return ids
+}
+
 // Kinesumer implements auto re-balancing consumer group for Kinesis.
 // TODO(mingrammer): export prometheus metrics.
 type Kinesumer struct {
-	id     string // Unique identity of a consumer group client.
+	// Unique identity of a consumer group client.
+	id     string
 	client *kinesis.Kinesis
-	leader bool // True if current client is a leader consumer group.
+	// A flag that identifies if the client is a leader.
+	leader bool
 
-	streams    []string
-	stateStore *stateStore // Distributed key-value store to manage states.
+	streams []string
 
-	// Shard information.
-	streamToShardCaches map[string][]string  // Full shard ids cache. (leader only)
-	streamToShardIDs    map[string][]string  // Current processing shard id list.
-	streamToCheckPoints map[string]*sync.Map // Map of last check points of shards.
-	streamToNextIters   map[string]*sync.Map // Map of next iterators for shards.
-
-	scanLimit   int64         // Maximum count of records to scan.
-	scanTimeout time.Duration // Records scanning maximum timeout.
-
+	// A stream where consumed records will have flowed.
 	records chan *Record
-	errors  chan error
 
-	wait  sync.WaitGroup // To wait the running consumer goroutines when stopping.
+	errors chan error
+
+	// A distributed key-value store for managing states.
+	stateStore *stateStore
+
+	// Shard information per stream.
+	// List of all shards as cache. For only leader node.
+	shardCaches map[string][]string
+	// A list of shards a node is currently in charge of.
+	shards map[string]Shards
+	// To cache the last sequence numbers for each shard.
+	checkPoints map[string]*sync.Map
+	// To manage the next shard iterators for each shard.
+	nextIters map[string]*sync.Map
+
+	// Maximum count of records to scan.
+	scanLimit int64
+	// Records scanning maximum timeout.
+	scanTimeout time.Duration
+
+	// To wait the running consumer loops when stopping.
+	wait  sync.WaitGroup
 	stop  chan struct{}
 	close chan struct{}
 }
@@ -127,21 +157,22 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 		)
 	}
 
+	buffer := recordsChanBuffer
 	kinesumer := &Kinesumer{
-		id:                  id,
-		client:              kinesis.New(sess, cfgs...),
-		stateStore:          stateStore,
-		streamToShardCaches: make(map[string][]string),
-		streamToShardIDs:    make(map[string][]string),
-		streamToCheckPoints: make(map[string]*sync.Map),
-		streamToNextIters:   make(map[string]*sync.Map),
-		scanLimit:           defaultScanLimit,
-		scanTimeout:         defaultScanTimeout,
-		records:             make(chan *Record, recordsChanBuffer),
-		errors:              make(chan error, 1),
-		wait:                sync.WaitGroup{},
-		stop:                make(chan struct{}),
-		close:               make(chan struct{}),
+		id:          id,
+		client:      kinesis.New(sess, cfgs...),
+		stateStore:  stateStore,
+		shardCaches: make(map[string][]string),
+		shards:      make(map[string]Shards),
+		checkPoints: make(map[string]*sync.Map),
+		nextIters:   make(map[string]*sync.Map),
+		scanLimit:   defaultScanLimit,
+		scanTimeout: defaultScanTimeout,
+		records:     make(chan *Record, buffer),
+		errors:      make(chan error, 1),
+		wait:        sync.WaitGroup{},
+		stop:        make(chan struct{}),
+		close:       make(chan struct{}),
 	}
 
 	if cfg.ScanLimit > 0 {
@@ -176,21 +207,21 @@ func (k *Kinesumer) init() error {
 	return nil
 }
 
-func (k *Kinesumer) listShardIDs(stream string) ([]string, error) {
+func (k *Kinesumer) listShards(stream string) (Shards, error) {
 	output, err := k.client.ListShards(&kinesis.ListShardsInput{
 		StreamName: aws.String(stream),
 	})
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	var ids []string
+	var shards []*Shard
 	for _, shard := range output.Shards {
-		// TODO(mingrammer): handle ending sequence number.
-		if shard.SequenceNumberRange.EndingSequenceNumber == nil {
-			ids = append(ids, *shard.ShardId)
-		}
+		shards = append(shards, &Shard{
+			ID:     *shard.ShardId,
+			Closed: shard.SequenceNumberRange.EndingSequenceNumber != nil,
+		})
 	}
-	return ids, nil
+	return shards, nil
 }
 
 // Consume consumes messages from Kinesis.
@@ -211,10 +242,10 @@ func (k *Kinesumer) Consume(
 func (k *Kinesumer) start() {
 	k.stop = make(chan struct{})
 
-	for stream, shardIDs := range k.streamToShardIDs {
-		for _, shardID := range shardIDs {
+	for stream, shardsPerStream := range k.shards {
+		for _, shard := range shardsPerStream {
 			k.wait.Add(1)
-			go k.consume(stream, shardID)
+			go k.consume(stream, shard)
 		}
 	}
 }
@@ -225,7 +256,7 @@ func (k *Kinesumer) pause() {
 	k.wait.Wait()
 }
 
-func (k *Kinesumer) consume(stream, shardID string) {
+func (k *Kinesumer) consume(stream string, shard *Shard) {
 	defer k.wait.Done()
 
 	for {
@@ -236,20 +267,27 @@ func (k *Kinesumer) consume(stream, shardID string) {
 			return
 		default:
 			time.Sleep(defaultTimeBuffer) // Time buffer to prevent high stress.
-			k.consumeOnce(stream, shardID)
+			if closed := k.consumeOnce(stream, shard); closed {
+				return // Close consume loop if shard is CLOSED and has no data.
+			}
 		}
 	}
 }
 
-func (k *Kinesumer) consumeOnce(stream, shardID string) {
+// It returns a flag whether if shard is CLOSED state and has no remaining data.
+func (k *Kinesumer) consumeOnce(stream string, shard *Shard) bool {
 	ctx := context.Background()
 	ctx, cancel := context.WithTimeout(ctx, k.scanTimeout)
 	defer cancel()
 
-	shardIter, err := k.getNextShardIterator(ctx, stream, shardID)
+	shardIter, err := k.getNextShardIterator(ctx, stream, shard.ID)
 	if err != nil {
 		k.errors <- errors.WithStack(err)
-		return
+		var riue *kinesis.ResourceInUseException
+		if errors.As(err, &riue) {
+			return true
+		}
+		return false
 	}
 
 	output, err := k.client.GetRecordsWithContext(ctx, &kinesis.GetRecordsInput{
@@ -258,17 +296,22 @@ func (k *Kinesumer) consumeOnce(stream, shardID string) {
 	})
 	if err != nil {
 		k.errors <- errors.WithStack(err)
-		var e *kinesis.ExpiredIteratorException
-		if errors.As(err, &e) {
-			k.streamToNextIters[stream].Delete(shardID) // Delete expired next iterator cache.
+		var riue *kinesis.ResourceInUseException
+		if errors.As(err, &riue) {
+			return true
 		}
-		return
+		var eie *kinesis.ExpiredIteratorException
+		if errors.As(err, &eie) {
+			k.nextIters[stream].Delete(shard.ID) // Delete expired next iterator cache.
+		}
+		return false
 	}
-	defer k.streamToNextIters[stream].Store(shardID, output.NextShardIterator) // Update iter.
+	defer k.nextIters[stream].Store(shard.ID, output.NextShardIterator) // Update iter.
 
 	n := len(output.Records)
+	// We no longer care about shards that have no records left and are in the "CLOSED" state.
 	if n == 0 {
-		return
+		return shard.Closed
 	}
 
 	var lastSequence string
@@ -287,19 +330,20 @@ func (k *Kinesumer) consumeOnce(stream, shardID string) {
 	ctx, cancel = context.WithTimeout(ctx, checkPointTimeout)
 	defer cancel()
 
-	if err := k.stateStore.UpdateCheckPoint(ctx, stream, shardID, lastSequence); err != nil {
+	if err := k.stateStore.UpdateCheckPoint(ctx, stream, shard.ID, lastSequence); err != nil {
 		log.Err(err).
 			Str("stream", stream).
-			Str("shard", shardID).
+			Str("shard id", shard.ID).
 			Str("missed sequence number", lastSequence).
 			Msg("kinesumer: failed to UpdateCheckPoint")
 	}
-	k.streamToCheckPoints[stream].Store(shardID, lastSequence)
+	k.checkPoints[stream].Store(shard.ID, lastSequence)
+	return false
 }
 
 func (k *Kinesumer) getNextShardIterator(
 	ctx context.Context, stream, shardID string) (*string, error) {
-	if iter, ok := k.streamToNextIters[stream].Load(shardID); ok {
+	if iter, ok := k.nextIters[stream].Load(shardID); ok {
 		return iter.(*string), nil
 	}
 
@@ -307,7 +351,7 @@ func (k *Kinesumer) getNextShardIterator(
 		StreamName: aws.String(stream),
 		ShardId:    aws.String(shardID),
 	}
-	if seq, ok := k.streamToCheckPoints[stream].Load(shardID); ok {
+	if seq, ok := k.checkPoints[stream].Load(shardID); ok {
 		input.SetShardIteratorType(kinesis.ShardIteratorTypeAfterSequenceNumber)
 		input.SetStartingSequenceNumber(seq.(string))
 	} else {
@@ -318,7 +362,7 @@ func (k *Kinesumer) getNextShardIterator(
 	if err != nil {
 		return nil, err
 	}
-	k.streamToNextIters[stream].Store(shardID, output.ShardIterator)
+	k.nextIters[stream].Store(shardID, output.ShardIterator)
 	return output.ShardIterator, nil
 }
 
