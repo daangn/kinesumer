@@ -2,10 +2,12 @@
 test: test_setup test_run test_clean
 
 .PHONY: test_setup
+test_setup: export AWS_PAGER=""
 test_setup:
 	@echo "building the environment.."
 	docker-compose -f tests/docker-compose.yml up --build -d --remove-orphans
-	@sleep 5
+	@echo "waiting for services initialized.."
+	@sleep 20
 	./tests/init.sh
 	@echo "environment build is done."
 
