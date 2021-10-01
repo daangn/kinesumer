@@ -293,6 +293,4 @@ func TestShardsRebalancing(t *testing.T) {
 			)
 		}
 	}
-
-	time.Sleep(15 * time.Second)
 }
