@@ -1,5 +1,7 @@
 # Kinesumer
 
+[![Run tests](https://github.com/daangn/kinesumer/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/daangn/kinesumer/actions/workflows/test.yml) [![Release](https://img.shields.io/github/v/tag/daangn/kinesumer?label=Release)](https://github.com/daangn/kinesumer/releases)
+
 Kinesumer is a Go client implementing a client-side distributed consumer group client for [Amazon Kinesis](https://aws.amazon.com/kinesis/). It supports following features:
 
 - Implement the client-side distributed Kinesis consumer group client.
