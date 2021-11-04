@@ -216,10 +216,13 @@ func (k *Kinesumer) listShards(stream string) (Shards, error) {
 	}
 	var shards []*Shard
 	for _, shard := range output.Shards {
-		shards = append(shards, &Shard{
-			ID:     *shard.ShardId,
-			Closed: shard.SequenceNumberRange.EndingSequenceNumber != nil,
-		})
+		// TODO(mingrammer): handle CLOSED shards.
+		if shard.SequenceNumberRange.EndingSequenceNumber == nil {
+			shards = append(shards, &Shard{
+				ID:     *shard.ShardId,
+				Closed: shard.SequenceNumberRange.EndingSequenceNumber != nil,
+			})
+		}
 	}
 	return shards, nil
 }
