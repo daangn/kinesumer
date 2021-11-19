@@ -23,10 +23,11 @@ const (
 	syncTimeout       = 5*time.Second - jitter
 	checkPointTimeout = 2 * time.Second
 
-	defaultScanLimit   int64 = 2000
-	defaultScanTimeout       = 2 * time.Second
+	defaultScanLimit int64 = 2000
 
-	defaultTimeBuffer = 10 * time.Millisecond
+	defaultScanTimeout  = 2 * time.Second
+	defaultScanInterval = 10 * time.Millisecond
+
 	recordsChanBuffer = 20
 )
 
@@ -47,8 +48,9 @@ type Config struct {
 	DynamoDBTable    string
 	DynamoDBEndpoint string // Only for local server.
 
-	ScanLimit   int64
-	ScanTimeout time.Duration
+	ScanLimit    int64
+	ScanTimeout  time.Duration
+	ScanInterval time.Duration
 }
 
 // Record represents kinesis.Record with stream name.
@@ -107,6 +109,8 @@ type Kinesumer struct {
 	scanLimit int64
 	// Records scanning maximum timeout.
 	scanTimeout time.Duration
+	// Scan the recrods at this interval.
+	scanInterval time.Duration
 
 	// To wait the running consumer loops when stopping.
 	wait  sync.WaitGroup
@@ -180,6 +184,9 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 	}
 	if cfg.ScanTimeout > 0 {
 		kinesumer.scanTimeout = cfg.ScanTimeout
+	}
+	if cfg.ScanInterval > 0 {
+		kinesumer.scanInterval = cfg.ScanInterval
 	}
 
 	if err := kinesumer.init(); err != nil {
@@ -262,6 +269,8 @@ func (k *Kinesumer) pause() {
 func (k *Kinesumer) consume(stream string, shard *Shard) {
 	defer k.wait.Done()
 
+	// ticker := time.NewTicker(k.scanInterval)
+
 	for {
 		select {
 		case <-k.stop:
@@ -269,7 +278,7 @@ func (k *Kinesumer) consume(stream string, shard *Shard) {
 		case <-k.close:
 			return
 		default:
-			time.Sleep(defaultTimeBuffer) // Time buffer to prevent high stress.
+			time.Sleep(k.scanInterval)
 			if closed := k.consumeOnce(stream, shard); closed {
 				return // Close consume loop if shard is CLOSED and has no data.
 			}
