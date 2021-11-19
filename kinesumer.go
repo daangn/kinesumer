@@ -163,20 +163,21 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 
 	buffer := recordsChanBuffer
 	kinesumer := &Kinesumer{
-		id:          id,
-		client:      kinesis.New(sess, cfgs...),
-		stateStore:  stateStore,
-		shardCaches: make(map[string][]string),
-		shards:      make(map[string]Shards),
-		checkPoints: make(map[string]*sync.Map),
-		nextIters:   make(map[string]*sync.Map),
-		scanLimit:   defaultScanLimit,
-		scanTimeout: defaultScanTimeout,
-		records:     make(chan *Record, buffer),
-		errors:      make(chan error, 1),
-		wait:        sync.WaitGroup{},
-		stop:        make(chan struct{}),
-		close:       make(chan struct{}),
+		id:           id,
+		client:       kinesis.New(sess, cfgs...),
+		stateStore:   stateStore,
+		shardCaches:  make(map[string][]string),
+		shards:       make(map[string]Shards),
+		checkPoints:  make(map[string]*sync.Map),
+		nextIters:    make(map[string]*sync.Map),
+		scanLimit:    defaultScanLimit,
+		scanTimeout:  defaultScanTimeout,
+		scanInterval: defaultScanInterval,
+		records:      make(chan *Record, buffer),
+		errors:       make(chan error, 1),
+		wait:         sync.WaitGroup{},
+		stop:         make(chan struct{}),
+		close:        make(chan struct{}),
 	}
 
 	if cfg.ScanLimit > 0 {
