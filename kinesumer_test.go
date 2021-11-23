@@ -263,21 +263,35 @@ func TestShardsRebalancing(t *testing.T) {
 
 	// After auto shard rebalancing.
 	expectedShardRanges2 := [][]string{
+		// {
+		// 	"shardId-000000000000",
+		// 	"shardId-000000000001",
+		// 	"shardId-000000000002",
+		// 	"shardId-000000000003",
+		// },
+		// {
+		// 	"shardId-000000000004",
+		// 	"shardId-000000000005",
+		// 	"shardId-000000000006",
+		// 	"shardId-000000000007",
+		// 	"shardId-000000000008",
+		// },
+		// {
+		// 	"shardId-000000000009",
+		// 	"shardId-000000000010",
+		// 	"shardId-000000000011",
+		// 	"shardId-000000000012",
+		// },
 		{
-			"shardId-000000000000",
-			"shardId-000000000001",
-			"shardId-000000000002",
-			"shardId-000000000003",
-		},
-		{
-			"shardId-000000000004",
 			"shardId-000000000005",
 			"shardId-000000000006",
 			"shardId-000000000007",
-			"shardId-000000000008",
 		},
 		{
+			"shardId-000000000008",
 			"shardId-000000000009",
+		},
+		{
 			"shardId-000000000010",
 			"shardId-000000000011",
 			"shardId-000000000012",
@@ -293,6 +307,4 @@ func TestShardsRebalancing(t *testing.T) {
 			)
 		}
 	}
-
-	time.Sleep(15 * time.Second)
 }
