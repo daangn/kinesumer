@@ -16,19 +16,33 @@ var (
 	ErrEmptyShardIDs = errors.New("kinesumer: empty shard ids given")
 )
 
-type db struct {
-	client *dynamo.DB
-	table  *dynamo.Table
-}
+type (
+	StateStore interface {
+		GetShards(ctx context.Context, stream string) (Shards, error)
+		UpdateShards(ctx context.Context, stream string, shards Shards) error
+		ListAllAliveClientIDs(ctx context.Context) ([]string, error)
+		RegisterClient(ctx context.Context, clientID string) error
+		DeregisterClient(ctx context.Context, clientID string) error
+		PingClientAliveness(ctx context.Context, clientID string) error
+		PruneClients(ctx context.Context) error
+		ListCheckPoints(ctx context.Context, stream string, shardIDs []string) (map[string]string, error)
+		UpdateCheckPoint(ctx context.Context, stream, shardID, seq string) error
+	}
 
-// stateStore is a distributed key-value store for managing states.
-type stateStore struct {
-	app string
-	db  *db
-}
+	db struct {
+		client *dynamo.DB
+		table  *dynamo.Table
+	}
+
+	// stateStore is a distributed key-value store for managing states.
+	stateStore struct {
+		app string
+		db  *db
+	}
+)
 
 // newStateStore initializes the state store.
-func newStateStore(cfg *Config) (*stateStore, error) {
+func newStateStore(cfg *Config) (StateStore, error) {
 	awsCfg := aws.NewConfig()
 	awsCfg.WithRegion(cfg.DynamoDBRegion)
 	if cfg.DynamoDBEndpoint != "" {

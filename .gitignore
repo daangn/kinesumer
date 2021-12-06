@@ -1,6 +1,7 @@
 # editors.
 .idea/
 .vscode/
+/vendor
 
 # trash.
 .DS_Store

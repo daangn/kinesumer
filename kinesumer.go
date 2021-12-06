@@ -44,6 +44,7 @@ type Config struct {
 	RoleARN string
 
 	// State store configs.
+	StateStore       *StateStore
 	DynamoDBRegion   string
 	DynamoDBTable    string
 	DynamoDBEndpoint string // Only for local server.
@@ -93,7 +94,7 @@ type Kinesumer struct {
 	errors chan error
 
 	// A distributed key-value store for managing states.
-	stateStore *stateStore
+	stateStore StateStore
 
 	// Shard information per stream.
 	// List of all shards as cache. For only leader node.
@@ -134,9 +135,15 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 	id += xrand.StringN(6) // Add suffix.
 
 	// Initialize the state store.
-	stateStore, err := newStateStore(cfg)
-	if err != nil {
-		return nil, errors.WithStack(err)
+	var stateStore StateStore
+	if cfg.StateStore == nil {
+		s, err := newStateStore(cfg)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+		stateStore = s
+	} else {
+		stateStore = *cfg.StateStore
 	}
 
 	// Initialize the AWS session to build Kinesis client.
