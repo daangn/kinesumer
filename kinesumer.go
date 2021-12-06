@@ -44,7 +44,7 @@ type Config struct {
 	RoleARN string
 
 	// State store configs.
-	StateStore       *StoreRepositories
+	StateStore       *StateStore
 	DynamoDBRegion   string
 	DynamoDBTable    string
 	DynamoDBEndpoint string // Only for local server.
@@ -94,7 +94,7 @@ type Kinesumer struct {
 	errors chan error
 
 	// A distributed key-value store for managing states.
-	stateStore StoreRepositories
+	stateStore StateStore
 
 	// Shard information per stream.
 	// List of all shards as cache. For only leader node.
@@ -135,7 +135,7 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 	id += xrand.StringN(6) // Add suffix.
 
 	// Initialize the state store.
-	var stateStore StoreRepositories
+	var stateStore StateStore
 	if cfg.StateStore == nil {
 		s, err := newStateStore(cfg)
 		if err != nil {

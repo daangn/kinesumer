@@ -17,7 +17,7 @@ var (
 )
 
 type (
-	StoreRepositories interface {
+	StateStore interface {
 		GetShards(ctx context.Context, stream string) (Shards, error)
 		UpdateShards(ctx context.Context, stream string, shards Shards) error
 		ListAllAliveClientIDs(ctx context.Context) ([]string, error)
@@ -42,7 +42,7 @@ type (
 )
 
 // newStateStore initializes the state store.
-func newStateStore(cfg *Config) (StoreRepositories, error) {
+func newStateStore(cfg *Config) (StateStore, error) {
 	awsCfg := aws.NewConfig()
 	awsCfg.WithRegion(cfg.DynamoDBRegion)
 	if cfg.DynamoDBEndpoint != "" {
