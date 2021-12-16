@@ -28,8 +28,6 @@ const (
 	defaultScanTimeout  = 2 * time.Second
 	defaultScanInterval = 10 * time.Millisecond
 
-	defaultPipeTimeout = 3 * time.Second
-
 	recordsChanBuffer = 20
 )
 
@@ -131,6 +129,8 @@ type Kinesumer struct {
 	// Scan the recrods at this interval.
 	scanInterval time.Duration
 
+	started chan struct{}
+
 	// To wait the running consumer loops when stopping.
 	wait  sync.WaitGroup
 	stop  chan struct{}
@@ -203,6 +203,7 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 		scanLimit:    defaultScanLimit,
 		scanTimeout:  defaultScanTimeout,
 		scanInterval: defaultScanInterval,
+		started:      make(chan struct{}),
 		wait:         sync.WaitGroup{},
 		stop:         make(chan struct{}),
 		close:        make(chan struct{}),
@@ -237,13 +238,6 @@ func (k *Kinesumer) init() error {
 	if err := k.stateStore.RegisterClient(ctx, k.id); err != nil {
 		return errors.WithStack(err)
 	}
-
-	// The leader will be determined during the initial sync job.
-	if err := k.syncShardInfo(ctx); err != nil {
-		return errors.WithStack(err)
-	}
-
-	go k.loopSyncClient()
 	return nil
 }
 
@@ -278,12 +272,18 @@ func (k *Kinesumer) Consume(
 
 	// In EFO mode, client should register itself to Kinesis stream.
 	if k.efoMode {
-		k.registerConsumers()
+		if err := k.registerConsumers(); err != nil {
+			return nil, errors.WithStack(err)
+		}
 	}
 
 	if err := k.syncShardInfo(ctx); err != nil {
 		return nil, errors.WithStack(err)
 	}
+
+	go k.loopSyncClient()
+
+	close(k.started)
 	return k.records, nil
 }
 
@@ -310,7 +310,35 @@ func (k *Kinesumer) registerConsumers() error {
 				StreamARN:    streamARN,
 			},
 		)
-		if err != nil {
+
+		// In case of that consumer is already registered.
+		var riue *kinesis.ResourceInUseException
+		if errors.As(err, &riue) {
+			lOutput, err := k.client.ListStreamConsumers(
+				&kinesis.ListStreamConsumersInput{
+					MaxResults: aws.Int64(20),
+					StreamARN:  streamARN,
+				},
+			)
+			if err != nil {
+				return errors.WithStack(err)
+			}
+
+			var consumer *kinesis.Consumer
+			for _, c := range lOutput.Consumers {
+				if *c.ConsumerName == consumerName {
+					consumer = c
+					break
+				}
+			}
+			k.efoMeta[stream] = &efoMeta{
+				consumerARN:  *consumer.ConsumerARN,
+				consumerName: *consumer.ConsumerName,
+				streamARN:    *streamARN,
+			}
+			continue
+
+		} else if err != nil {
 			return errors.WithStack(err)
 		}
 		k.efoMeta[stream] = &efoMeta{
@@ -381,18 +409,19 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 
 		for {
 			ctx := context.Background()
-			ctx, cancel := context.WithTimeout(ctx, defaultPipeTimeout)
+			ctx, cancel := context.WithCancel(ctx)
 
 			input := &kinesis.SubscribeToShardInput{
 				ConsumerARN: aws.String(k.efoMeta[stream].consumerARN),
 				ShardId:     aws.String(shard.ID),
+				StartingPosition: &kinesis.StartingPosition{
+					Type: aws.String(kinesis.ShardIteratorTypeLatest),
+				},
 			}
 
 			if seq, ok := k.checkPoints[stream].Load(shard.ID); ok {
 				input.StartingPosition.SetType(kinesis.ShardIteratorTypeAfterSequenceNumber)
 				input.StartingPosition.SetSequenceNumber(seq.(string))
-			} else {
-				input.StartingPosition.SetType(kinesis.ShardIteratorTypeLatest)
 			}
 
 			output, err := k.client.SubscribeToShardWithContext(ctx, input)
@@ -401,19 +430,22 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 				cancel()
 				continue
 			}
-			cancel()
 
-			for {
+			open := true
+			for open {
 				select {
 				case <-k.stop:
 					output.GetEventStream().Close()
+					cancel()
 					return
 				case <-k.close:
 					output.GetEventStream().Close()
+					cancel()
 					return
-				case e, closed := <-output.GetEventStream().Events():
-					if closed {
-						break
+				case e, ok := <-output.GetEventStream().Events():
+					if !ok {
+						cancel()
+						open = false
 					}
 					streamEvents <- e
 				}
