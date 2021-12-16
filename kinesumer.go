@@ -288,6 +288,10 @@ func (k *Kinesumer) Consume(
 }
 
 func (k *Kinesumer) registerConsumers() error {
+	if !k.leader {
+		return nil
+	}
+
 	consumerName := k.app
 	if k.rgn != "" {
 		consumerName += "-" + k.rgn
@@ -351,6 +355,10 @@ func (k *Kinesumer) registerConsumers() error {
 }
 
 func (k *Kinesumer) deregisterConsumers() {
+	if !k.leader {
+		return
+	}
+
 	for _, meta := range k.efoMeta {
 		_, err := k.client.DeregisterStreamConsumer(
 			&kinesis.DeregisterStreamConsumerInput{
