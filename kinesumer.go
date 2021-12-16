@@ -351,8 +351,7 @@ func (k *Kinesumer) registerConsumers() error {
 }
 
 func (k *Kinesumer) deregisterConsumers() {
-	for _, stream := range k.streams {
-		meta := k.efoMeta[stream]
+	for _, meta := range k.efoMeta {
 		_, err := k.client.DeregisterStreamConsumer(
 			&kinesis.DeregisterStreamConsumerInput{
 				ConsumerARN:  aws.String(meta.consumerARN),
