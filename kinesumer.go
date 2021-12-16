@@ -457,6 +457,10 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 			var lastSequence string
 
 			n := len(se.Records)
+			if n == 0 {
+				continue
+			}
+
 			for i, record := range se.Records {
 				k.records <- &Record{
 					Stream: stream,
