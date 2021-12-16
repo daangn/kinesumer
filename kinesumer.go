@@ -288,10 +288,6 @@ func (k *Kinesumer) Consume(
 }
 
 func (k *Kinesumer) registerConsumers() error {
-	if !k.leader {
-		return nil
-	}
-
 	consumerName := k.app
 	if k.rgn != "" {
 		consumerName += "-" + k.rgn
@@ -355,10 +351,6 @@ func (k *Kinesumer) registerConsumers() error {
 }
 
 func (k *Kinesumer) deregisterConsumers() {
-	if !k.leader {
-		return
-	}
-
 	for _, meta := range k.efoMeta {
 		_, err := k.client.DeregisterStreamConsumer(
 			&kinesis.DeregisterStreamConsumerInput{
@@ -622,9 +614,7 @@ func (k *Kinesumer) getNextShardIterator(
 // Refresh refreshes the consuming streams.
 func (k *Kinesumer) Refresh(streams []string) {
 	k.pause()
-	if k.efoMode {
-		k.deregisterConsumers()
-	}
+	// TODO(mingrammer): Deregister the EFO consumers.
 
 	k.streams = streams
 
@@ -656,10 +646,7 @@ func (k *Kinesumer) Close() {
 		// Do nothing with errors.
 	}
 
-	// Deregister the EFO consumers.
-	if k.efoMode {
-		k.deregisterConsumers()
-	}
+	// TODO(mingrammer): Deregister the EFO consumers.
 
 	// Wait last sync jobs.
 	time.Sleep(syncTimeout)
