@@ -19,9 +19,11 @@ import (
 const (
 	jitter = 50 * time.Millisecond
 
-	syncInterval      = 5*time.Second + jitter
-	syncTimeout       = 5*time.Second - jitter
-	checkPointTimeout = 2 * time.Second
+	syncInterval = 5*time.Second + jitter
+	syncTimeout  = 5*time.Second - jitter
+
+	checkPointTimeout  = 2 * time.Second
+	checkPointInterval = 5 * time.Second // For EFO mode.
 
 	defaultScanLimit int64 = 2000
 
@@ -452,25 +454,31 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 		}
 	}()
 
-	for e := range streamEvents {
-		if se, ok := e.(*kinesis.SubscribeToShardEvent); ok {
-			var lastSequence string
+	var (
+		lastSequence     string
+		checkPointTicker = time.NewTicker(checkPointInterval)
+	)
 
-			n := len(se.Records)
-			if n == 0 {
-				continue
-			}
-
-			for i, record := range se.Records {
-				k.records <- &Record{
-					Stream: stream,
-					Record: record,
+	for {
+		select {
+		case e := <-streamEvents:
+			if se, ok := e.(*kinesis.SubscribeToShardEvent); ok {
+				n := len(se.Records)
+				if n == 0 {
+					continue
 				}
-				if i == n-1 {
-					lastSequence = *record.SequenceNumber
+
+				for i, record := range se.Records {
+					k.records <- &Record{
+						Stream: stream,
+						Record: record,
+					}
+					if i == n-1 {
+						lastSequence = *record.SequenceNumber
+					}
 				}
 			}
-
+		case <-checkPointTicker.C:
 			// Check point the sequence number.
 			ctx := context.Background()
 			ctx, cancel := context.WithTimeout(ctx, checkPointTimeout)
@@ -483,6 +491,7 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 			}
 			k.checkPoints[stream].Store(shard.ID, lastSequence)
 			cancel()
+
 		}
 	}
 }
