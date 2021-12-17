@@ -461,7 +461,10 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 
 	for {
 		select {
-		case e := <-streamEvents:
+		case e, ok := <-streamEvents:
+			if !ok {
+				return
+			}
 			if se, ok := e.(*kinesis.SubscribeToShardEvent); ok {
 				n := len(se.Records)
 				if n == 0 {
@@ -495,7 +498,6 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 			}
 			k.checkPoints[stream].Store(shard.ID, lastSequence)
 			cancel()
-
 		}
 	}
 }
