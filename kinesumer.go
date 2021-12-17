@@ -479,6 +479,10 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 				}
 			}
 		case <-checkPointTicker.C:
+			if lastSequence == "" {
+				continue
+			}
+
 			// Check point the sequence number.
 			ctx := context.Background()
 			ctx, cancel := context.WithTimeout(ctx, checkPointTimeout)
