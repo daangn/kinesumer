@@ -13,6 +13,8 @@ import (
 )
 
 func (k *Kinesumer) loopSyncClient() {
+	<-k.started
+
 	ticker := time.NewTicker(syncInterval)
 	for {
 		select {
