@@ -2,11 +2,10 @@ package kinesumer
 
 import (
 	"context"
+	"github.com/daangn/kinesumer/pkg/xrand"
 	"os"
 	"sync"
 	"time"
-
-	"github.com/daangn/kinesumer/pkg/xrand"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
@@ -33,7 +32,8 @@ const (
 
 // Config defines configs for the Kinesumer client.
 type Config struct {
-	App string // Application name.
+	App      string // Application name.
+	ClientID string
 
 	// Kinesis configs.
 	KinesisRegion   string
@@ -127,12 +127,16 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 		)
 	}
 
-	// Make unique client id.
+	// Make unique client id. / Add suffix.
 	id, err := os.Hostname()
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
-	id += xrand.StringN(6) // Add suffix.
+	id += xrand.StringN(6)
+
+	if cfg.ClientID != "" {
+		id = cfg.ClientID
+	}
 
 	// Initialize the state store.
 	var stateStore StateStore
