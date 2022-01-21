@@ -35,8 +35,9 @@ const (
 
 // Config defines configs for the Kinesumer client.
 type Config struct {
-	App    string // Application name.
-	Region string // Region name. (optional)
+	App      string // Application name.
+	Region   string // Region name. (optional)
+	ClientID string // consumer group client id. (optional)
 
 	// Kinesis configs.
 	KinesisRegion   string
@@ -153,6 +154,10 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 		return nil, errors.WithStack(err)
 	}
 	id += xrand.StringN(6) // Add suffix.
+
+	if cfg.ClientID != "" {
+		id = cfg.ClientID
+	}
 
 	// Initialize the state store.
 	var stateStore StateStore
