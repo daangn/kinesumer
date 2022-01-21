@@ -37,7 +37,7 @@ const (
 type Config struct {
 	App      string // Application name.
 	Region   string // Region name. (optional)
-	ClientID string // consumer group client id. (optional)
+	ClientID string // Consumer group client id. (optional)
 
 	// Kinesis configs.
 	KinesisRegion   string
