@@ -1,6 +1,7 @@
 package kinesumer
 
 import (
+	"context"
 	"sort"
 	"testing"
 	"time"
@@ -8,8 +9,9 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/kinesis"
-	"github.com/daangn/kinesumer/pkg/collection"
 	"github.com/guregu/dynamo"
+
+	"github.com/daangn/kinesumer/pkg/collection"
 )
 
 type testEnv struct {
@@ -305,6 +307,61 @@ func TestShardsRebalancing(t *testing.T) {
 			t.Errorf(
 				"expected %v, got %v", expected, shardIDs,
 			)
+		}
+	}
+}
+
+func TestKinesumerCommit(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanUp(t)
+
+	streams := []string{"events"}
+	_, err := env.client1.Consume(streams)
+	if err != nil {
+		t.Errorf("expected no errors, got %v", err)
+	}
+	_, err = env.client2.Consume(streams)
+	if err != nil {
+		t.Errorf("expected no errors, got %v", err)
+	}
+	_, err = env.client3.Consume(streams)
+	if err != nil {
+		t.Errorf("expected no errors, got %v", err)
+	}
+
+	var (
+		clients = map[string]*Kinesumer{
+			env.client1.id: env.client1,
+			env.client2.id: env.client2,
+			env.client3.id: env.client3,
+		}
+		shards = map[string][]string{}
+		result = map[string]string{}
+	)
+	for id, client := range clients {
+		shards[id] = client.shards["events"].ids()
+	}
+
+	for clientID, shardIDs := range shards {
+		for _, shardID := range shardIDs {
+			clients[clientID].Commit("events", shardID, "111")
+		}
+	}
+
+	ctx := context.Background()
+	for clientID, shardIDs := range shards {
+		checkpoints, err := clients[clientID].stateStore.ListCheckPoints(ctx, "events", shardIDs)
+		if err != nil {
+			t.Errorf("expected no errors, got %v", err)
+		}
+		for shardID, checkpoint := range checkpoints {
+			result[shardID] = checkpoint
+		}
+	}
+
+	for _, checkPoint := range result {
+		if checkPoint != "111" {
+			t.Errorf("expected %v, got %v", "111", checkPoint)
 		}
 	}
 }

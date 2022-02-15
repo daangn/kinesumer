@@ -2,6 +2,7 @@ package kinesumer
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -31,6 +32,10 @@ const (
 	defaultScanInterval = 10 * time.Millisecond
 
 	recordsChanBuffer = 20
+)
+
+var (
+	ErrEmptySequenceNumber = errors.New("kinesumer: empty sequence number given")
 )
 
 // Config defines configs for the Kinesumer client.
@@ -468,7 +473,7 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 		select {
 		case e, ok := <-streamEvents:
 			if !ok {
-				k.commitCheckPoint(stream, shard.ID, lastSequence)
+				k.Commit(stream, shard.ID, lastSequence)
 				return
 			}
 			if se, ok := e.(*kinesis.SubscribeToShardEvent); ok {
@@ -488,15 +493,16 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 				}
 			}
 		case <-checkPointTicker.C:
-			k.commitCheckPoint(stream, shard.ID, lastSequence)
+			k.Commit(stream, shard.ID, lastSequence)
 		}
 	}
 }
 
-// update checkpoint using sequence number.
-func (k *Kinesumer) commitCheckPoint(stream, shardID, lastSeqNum string) {
-	if lastSeqNum == "" {
+// Commit updates check point with sequence number.
+func (k *Kinesumer) Commit(stream, shardID, sequenceNumber string) {
+	if sequenceNumber == "" {
 		// sequence number can't be empty.
+		k.errors <- ErrEmptySequenceNumber
 		return
 	}
 
@@ -504,14 +510,20 @@ func (k *Kinesumer) commitCheckPoint(stream, shardID, lastSeqNum string) {
 	ctx, cancel := context.WithTimeout(ctx, checkPointTimeout)
 	defer cancel()
 
-	if err := k.stateStore.UpdateCheckPoint(ctx, stream, shardID, lastSeqNum); err != nil {
-		log.Err(err).
-			Str("stream", stream).
-			Str("shard id", shardID).
-			Str("missed sequence number", lastSeqNum).
-			Msg("kinesumer: failed to UpdateCheckPoint")
+	if err := k.commitCheckPoint(ctx, stream, shardID, sequenceNumber); err != nil {
+		msg := fmt.Sprintf("kinesumer: failed to Commit %s/%s: %s", stream, shardID, sequenceNumber)
+		k.errors <- errors.Wrap(err, msg)
 	}
-	k.checkPoints[stream].Store(shardID, lastSeqNum)
+}
+
+// update checkpoint using sequence number.
+func (k *Kinesumer) commitCheckPoint(ctx context.Context, stream, shardID, seqNum string) error {
+	if err := k.stateStore.UpdateCheckPoint(ctx, stream, shardID, seqNum); err != nil {
+		return errors.WithStack(err)
+	}
+	k.checkPoints[stream].Store(shardID, seqNum)
+
+	return nil
 }
 
 /*
@@ -595,7 +607,7 @@ func (k *Kinesumer) consumeOnce(stream string, shard *Shard) bool {
 		}
 	}
 
-	k.commitCheckPoint(stream, shard.ID, lastSequence)
+	k.Commit(stream, shard.ID, lastSequence)
 	return false
 }
 
