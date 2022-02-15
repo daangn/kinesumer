@@ -34,6 +34,7 @@ const (
 	recordsChanBuffer = 20
 )
 
+// Error codes.
 var (
 	ErrEmptySequenceNumber = errors.New("kinesumer: empty sequence number given")
 )
