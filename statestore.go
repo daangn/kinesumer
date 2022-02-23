@@ -27,7 +27,7 @@ type (
 		PingClientAliveness(ctx context.Context, clientID string) error
 		PruneClients(ctx context.Context) error
 		ListCheckPoints(ctx context.Context, stream string, shardIDs []string) (map[string]string, error)
-		UpdateCheckPoint(ctx context.Context, stream, shardID, seq string) error
+		UpdateCheckPoints(ctx context.Context, checkpoints []*shardCheckPoint) error
 	}
 
 	db struct {
@@ -233,7 +233,7 @@ func (s *stateStore) ListCheckPoints(
 	for _, id := range shardIDs {
 		keys = append(
 			keys,
-			dynamo.Keys{buildCheckPointKey(s.app, id), stream},
+			dynamo.Keys{buildCheckPointKey(s.app, stream), id},
 		)
 	}
 
@@ -254,21 +254,30 @@ func (s *stateStore) ListCheckPoints(
 	return seqMap, nil
 }
 
-// UpdateCheckPoint updates the check point sequence number for a shard.
-func (s *stateStore) UpdateCheckPoint(
-	ctx context.Context, stream, shardID, seq string,
-) error {
+// UpdateCheckPoints updates the check point sequence numbers for a shards.
+// length of checkpoints parameter can't be no more than 25.
+// Reference: https://docs.aws.amazon.com/sdk-for-go/api/service/dynamodb/#DynamoDB.BatchWriteItem
+func (s *stateStore) UpdateCheckPoints(ctx context.Context, checkpoints []*shardCheckPoint) error {
 	var (
-		key = buildCheckPointKey(s.app, stream)
-		now = time.Now()
+		stateCheckPoints []interface{}
+		now              = time.Now()
 	)
-	checkPoint := stateCheckPoint{
-		StreamKey:      key,
-		ShardID:        shardID,
-		SequenceNumber: seq,
-		LastUpdate:     now,
+	for _, checkpoint := range checkpoints {
+		stateCheckPoints = append(stateCheckPoints, stateCheckPoint{
+			StreamKey:      buildCheckPointKey(s.app, checkpoint.Stream),
+			ShardID:        checkpoint.ShardID,
+			SequenceNumber: checkpoint.SequenceNumber,
+			LastUpdate:     now,
+		})
 	}
-	if err := s.db.table.Put(checkPoint).RunWithContext(ctx); err != nil {
+
+	// TODO(proost): check written bytes
+	_, err := s.db.table.
+		Batch("pk", "sk").
+		Write().
+		Put(stateCheckPoints...).
+		RunWithContext(ctx)
+	if err != nil {
 		return errors.WithStack(err)
 	}
 	return nil

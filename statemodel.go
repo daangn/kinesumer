@@ -36,6 +36,14 @@ func buildClientKey(app string) string {
 	return buildKeyFn(clientKeyFmt, app)
 }
 
+// shardCheckPoint manages a shard check point
+// shardCheckPoint is DTO(Data Transfer Object) for kinesumer&state store layers
+type shardCheckPoint struct {
+	Stream         string
+	ShardID        string
+	SequenceNumber string
+}
+
 // stateCheckPoint manages record check points.
 type stateCheckPoint struct {
 	StreamKey      string    `dynamo:"pk,pk"`
