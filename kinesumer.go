@@ -70,27 +70,27 @@ type Config struct {
 	EFOMode bool // On/off the Enhanced Fan-Out feature.
 
 	// This config is used for how to manage sequence number.
-	Offset *OffsetManagement
+	Commit *CommitProperties
 }
 
-// OffsetManagement holds options for how to offset handled.
-type OffsetManagement struct {
+// CommitProperties holds options for how to offset handled.
+type CommitProperties struct {
 	// Whether to auto-commit updated sequence number. (default is true)
-	AutoCommit bool
+	Auto bool
 
 	// How frequently to commit updated sequence numbers. (default is 5s)
-	CommitInterval time.Duration
+	Interval time.Duration
 
 	// A Timeout config for commit per stream. (default is 2s)
-	CommitTimeout time.Duration
+	Timeout time.Duration
 }
 
-// NewDefaultOffsetManagement returns a new default offset management configuration.
-func NewDefaultOffsetManagement() *OffsetManagement {
-	return &OffsetManagement{
-		AutoCommit:     true,
-		CommitInterval: defaultCommitInterval,
-		CommitTimeout:  defaultCommitTimeout,
+// NewDefaultCommitProperties returns a new default offset management configuration.
+func NewDefaultCommitProperties() *CommitProperties {
+	return &CommitProperties{
+		Auto:     true,
+		Interval: defaultCommitInterval,
+		Timeout:  defaultCommitTimeout,
 	}
 }
 
@@ -235,8 +235,8 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 		)
 	}
 
-	if cfg.Offset == nil {
-		cfg.Offset = NewDefaultOffsetManagement()
+	if cfg.Commit == nil {
+		cfg.Commit = NewDefaultCommitProperties()
 	}
 
 	buffer := recordsChanBuffer
@@ -277,9 +277,9 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 		kinesumer.efoMeta = make(map[string]*efoMeta)
 	}
 
-	kinesumer.autoCommit = cfg.Offset.AutoCommit
-	kinesumer.commitInterval = cfg.Offset.CommitInterval
-	kinesumer.commitTimeout = cfg.Offset.CommitTimeout
+	kinesumer.autoCommit = cfg.Commit.Auto
+	kinesumer.commitInterval = cfg.Commit.Interval
+	kinesumer.commitTimeout = cfg.Commit.Timeout
 
 	if err := kinesumer.init(); err != nil {
 		return nil, errors.WithStack(err)
@@ -677,11 +677,11 @@ func (k *Kinesumer) commitPeriodically() {
 	for {
 		select {
 		case <-k.stop:
-			// If stop channel is closed, consumer goroutine must call Commit function.
+			// If stop channel is closed, consumer goroutine must call Auto function.
 			// Because commitPeriodically function doesn't know whether remained events from Kinesis exist.
 			return
 		case <-k.close:
-			// If close channel is closed, consumer goroutine must call Commit function.
+			// If close channel is closed, consumer goroutine must call Auto function.
 			// Because commitPeriodically function doesn't know whether remained events from Kinesis exist.
 			return
 		case <-checkPointTicker.C:
@@ -746,7 +746,7 @@ func (k *Kinesumer) commitCheckPointPerStream(stream string, checkpoints []*shar
 	}
 
 	if err := eg.Wait(); err != nil {
-		k.errors <- errors.Wrapf(err, "failed to Commit: %s", stream)
+		k.errors <- errors.Wrapf(err, "failed to Auto: %s", stream)
 		return
 	}
 	go k.cleanupOffsets(checkpoints)
