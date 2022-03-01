@@ -335,7 +335,7 @@ func TestKinesumerMarkRecord(t *testing.T) {
 	}
 
 	for _, shardID := range shardIDs {
-		resultSeqNum, ok := env.client1.checkPoints["events"].Load(shardID)
+		resultSeqNum, ok := env.client1.offsets["events"].Load(shardID)
 		if ok {
 			assert.EqualValues(t, expectedSeqNum, resultSeqNum, "they should be equal")
 		} else {

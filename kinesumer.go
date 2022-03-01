@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/kinesis"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -23,9 +24,8 @@ const (
 	syncInterval = 5*time.Second + jitter
 	syncTimeout  = 5*time.Second - jitter
 
-	defaultCheckPointTimeout = 2 * time.Second
-	// For EFO mode.
-	defaultCheckPointInterval = 5 * time.Second
+	defaultCommitTimeout  = 2 * time.Second
+	defaultCommitInterval = 5 * time.Second
 
 	defaultScanLimit int64 = 2000
 
@@ -37,8 +37,8 @@ const (
 
 // Error codes.
 var (
-	ErrEmptySequenceNumber = errors.New("failed to mark message: empty sequence number given")
-	ErrInvalidStream       = errors.New("failed to mark message: invalid stream")
+	ErrEmptySequenceNumber = errors.New("kinesumer: sequence number can't be empty")
+	ErrInvalidStream       = errors.New("kinesumer: invalid stream")
 )
 
 // Config defines configs for the Kinesumer client.
@@ -67,11 +67,31 @@ type Config struct {
 	ScanInterval time.Duration
 
 	// These configs are used in EFO mode.
-	EFOMode            bool // On/off the Enhanced Fan-Out feature.
-	CheckPointTimeout  time.Duration
-	CheckPointInterval time.Duration // Time interval for commit using EFO mode When Auto commit is true.
+	EFOMode bool // On/off the Enhanced Fan-Out feature.
 
-	AutoCommitEnabled bool // Enable to auto commit. default is true.
+	// This config is used for how to manage sequence number.
+	Offset *OffsetManagement
+}
+
+// OffsetManagement holds options for how to offset handled.
+type OffsetManagement struct {
+	// Whether to auto-commit updated sequence number. (default is true)
+	AutoCommit bool
+
+	// How frequently to commit updated sequence numbers. (default is 5s)
+	CommitInterval time.Duration
+
+	// A Timeout config for commit per stream. (default is 2s)
+	CommitTimeout time.Duration
+}
+
+// NewDefaultOffsetManagement returns a new default offset management configuration.
+func NewDefaultOffsetManagement() *OffsetManagement {
+	return &OffsetManagement{
+		AutoCommit:     true,
+		CommitInterval: defaultCommitInterval,
+		CommitTimeout:  defaultCommitTimeout,
+	}
 }
 
 // Record represents kinesis.Record with stream name.
@@ -119,11 +139,8 @@ type Kinesumer struct {
 
 	streams []string
 
-	efoMode           bool
-	efoMeta           map[string]*efoMeta
-	checkPointTimeout time.Duration
-	// Time interval for commit using EFO mode When Auto commit is true.
-	checkPointInterval time.Duration
+	efoMode bool
+	efoMeta map[string]*efoMeta
 
 	// A stream where consumed records will have flowed.
 	records chan *Record
@@ -140,6 +157,8 @@ type Kinesumer struct {
 	shards map[string]Shards
 	// To cache the last sequence numbers for each shard.
 	checkPoints map[string]*sync.Map
+	// offsets holds sequence numbers which will be committed.
+	offsets map[string]*sync.Map
 	// To manage the next shard iterators for each shard.
 	nextIters map[string]*sync.Map
 
@@ -152,8 +171,10 @@ type Kinesumer struct {
 
 	started chan struct{}
 
-	// auto commit enabled
-	autoCommitEnabled bool
+	// commit options.
+	autoCommit     bool
+	commitTimeout  time.Duration
+	commitInterval time.Duration
 
 	// To wait the running consumer loops when stopping.
 	wait  sync.WaitGroup
@@ -214,30 +235,32 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 		)
 	}
 
+	if cfg.Offset == nil {
+		cfg.Offset = NewDefaultOffsetManagement()
+	}
+
 	buffer := recordsChanBuffer
 	kinesumer := &Kinesumer{
-		id:                 id,
-		client:             kinesis.New(sess, cfgs...),
-		app:                cfg.App,
-		rgn:                cfg.Region,
-		efoMode:            cfg.EFOMode,
-		checkPointTimeout:  defaultCheckPointTimeout,
-		checkPointInterval: defaultCheckPointInterval,
-		records:            make(chan *Record, buffer),
-		errors:             make(chan error, 1),
-		stateStore:         stateStore,
-		shardCaches:        make(map[string][]string),
-		shards:             make(map[string]Shards),
-		checkPoints:        make(map[string]*sync.Map),
-		nextIters:          make(map[string]*sync.Map),
-		scanLimit:          defaultScanLimit,
-		scanTimeout:        defaultScanTimeout,
-		scanInterval:       defaultScanInterval,
-		started:            make(chan struct{}),
-		wait:               sync.WaitGroup{},
-		stop:               make(chan struct{}),
-		close:              make(chan struct{}),
-		autoCommitEnabled:  true,
+		id:           id,
+		client:       kinesis.New(sess, cfgs...),
+		app:          cfg.App,
+		rgn:          cfg.Region,
+		efoMode:      cfg.EFOMode,
+		records:      make(chan *Record, buffer),
+		errors:       make(chan error, 1),
+		stateStore:   stateStore,
+		shardCaches:  make(map[string][]string),
+		shards:       make(map[string]Shards),
+		checkPoints:  make(map[string]*sync.Map),
+		offsets:      make(map[string]*sync.Map),
+		nextIters:    make(map[string]*sync.Map),
+		scanLimit:    defaultScanLimit,
+		scanTimeout:  defaultScanTimeout,
+		scanInterval: defaultScanInterval,
+		started:      make(chan struct{}),
+		wait:         sync.WaitGroup{},
+		stop:         make(chan struct{}),
+		close:        make(chan struct{}),
 	}
 
 	if cfg.ScanLimit > 0 {
@@ -253,16 +276,10 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 	if kinesumer.efoMode {
 		kinesumer.efoMeta = make(map[string]*efoMeta)
 	}
-	if cfg.CheckPointInterval > 0 {
-		kinesumer.checkPointInterval = cfg.CheckPointInterval
-	}
-	if cfg.CheckPointTimeout > 0 {
-		kinesumer.checkPointTimeout = cfg.CheckPointTimeout
-	}
 
-	if !cfg.AutoCommitEnabled {
-		kinesumer.autoCommitEnabled = false
-	}
+	kinesumer.autoCommit = cfg.Offset.AutoCommit
+	kinesumer.commitInterval = cfg.Offset.CommitInterval
+	kinesumer.commitTimeout = cfg.Offset.CommitTimeout
 
 	if err := kinesumer.init(); err != nil {
 		return nil, errors.WithStack(err)
@@ -416,17 +433,17 @@ func (k *Kinesumer) start() {
 			k.startConsuming(stream, shard)
 		}
 	}
+
+	if k.autoCommit {
+		go k.commitPeriodically()
+	}
 }
 
 func (k *Kinesumer) startConsuming(stream string, shard *Shard) {
-	if k.efoMode && k.autoCommitEnabled {
-		go k.consumePipeWithAutoCommit(stream, shard)
-	} else if k.efoMode && !k.autoCommitEnabled {
-		go k.consumePipeWithManualCommit(stream, shard)
-	} else if !k.efoMode && k.autoCommitEnabled {
-		go k.consumePollingWithAutoCommit(stream, shard)
-	} else if !k.efoMode && !k.autoCommitEnabled {
-		go k.consumePollingWithManualCommit(stream, shard)
+	if k.efoMode {
+		go k.consumePipe(stream, shard)
+	} else {
+		go k.consumePolling(stream, shard)
 	}
 }
 
@@ -442,14 +459,12 @@ Dedicated consumer with EFO.
 
 */
 
-func (k *Kinesumer) consumePipeWithAutoCommit(stream string, shard *Shard) {
+func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 	defer k.wait.Done()
 
 	streamEvents := make(chan kinesis.SubscribeToShardEventStreamEvent)
 
 	go k.subscribeToShard(streamEvents, stream, shard)
-
-	var checkPointTicker = time.NewTicker(k.checkPointInterval)
 
 	for {
 		select {
@@ -475,42 +490,6 @@ func (k *Kinesumer) consumePipeWithAutoCommit(stream string, shard *Shard) {
 					if i == n-1 {
 						k.MarkRecord(r)
 					}
-				}
-			}
-		case <-checkPointTicker.C:
-			k.Commit()
-		}
-	}
-}
-
-func (k *Kinesumer) consumePipeWithManualCommit(stream string, shard *Shard) {
-	defer k.wait.Done()
-
-	streamEvents := make(chan kinesis.SubscribeToShardEventStreamEvent)
-
-	go k.subscribeToShard(streamEvents, stream, shard)
-
-	for {
-		e, ok := <-streamEvents
-		if !ok {
-			return
-		}
-		if se, ok := e.(*kinesis.SubscribeToShardEvent); ok {
-			n := len(se.Records)
-			if n == 0 {
-				continue
-			}
-
-			for i, record := range se.Records {
-				r := &Record{
-					Stream:  stream,
-					ShardID: shard.ID,
-					Record:  record,
-				}
-				k.records <- r
-
-				if i == n-1 {
-					k.MarkRecord(r)
 				}
 			}
 		}
@@ -571,54 +550,16 @@ func (k *Kinesumer) subscribeToShard(streamEvents chan kinesis.SubscribeToShardE
 Shared consumer with polling.
 
 */
-func (k *Kinesumer) consumePollingWithAutoCommit(stream string, shard *Shard) {
+func (k *Kinesumer) consumePolling(stream string, shard *Shard) {
 	defer k.wait.Done()
 
 	for {
 		select {
 		case <-k.stop:
-			return
-		case <-k.close:
-			return
-		default:
-			time.Sleep(k.scanInterval)
-			records, closed := k.consumeOnce(stream, shard)
-			if closed {
-				return // Close consume loop if shard is CLOSED and has no data.
-			}
-			if records == nil {
-				continue
-			}
-			n := len(records)
-			if n == 0 {
-				continue
-			}
-
-			for i, record := range records {
-				r := &Record{
-					Stream:  stream,
-					ShardID: shard.ID,
-					Record:  record,
-				}
-				k.records <- r
-
-				if i == n-1 {
-					k.MarkRecord(r)
-				}
-			}
 			k.Commit()
-		}
-	}
-}
-
-func (k *Kinesumer) consumePollingWithManualCommit(stream string, shard *Shard) {
-	defer k.wait.Done()
-
-	for {
-		select {
-		case <-k.stop:
 			return
 		case <-k.close:
+			k.Commit()
 			return
 		default:
 			time.Sleep(k.scanInterval)
@@ -720,8 +661,26 @@ func (k *Kinesumer) getNextShardIterator(
 Sequence Number management
 
 */
+func (k *Kinesumer) commitPeriodically() {
+	var checkPointTicker = time.NewTicker(k.commitInterval)
 
-// MarkRecord marks the provided record.
+	for {
+		select {
+		case <-k.stop:
+			// If stop channel is closed, consumer goroutine must call Commit function.
+			// Because commitPeriodically function doesn't know whether remained events from Kinesis exist.
+			return
+		case <-k.close:
+			// If close channel is closed, consumer goroutine must call Commit function.
+			// Because commitPeriodically function doesn't know whether remained events from Kinesis exist.
+			return
+		case <-checkPointTicker.C:
+			k.Commit()
+		}
+	}
+}
+
+// MarkRecord marks the provided record as consumed.
 func (k *Kinesumer) MarkRecord(record *Record) {
 	if record == nil {
 		return
@@ -733,20 +692,18 @@ func (k *Kinesumer) MarkRecord(record *Record) {
 		k.errors <- ErrEmptySequenceNumber
 		return
 	}
-
-	checkpoint, found := k.checkPoints[record.Stream]
-	if !found {
+	if _, found := k.checkPoints[record.Stream]; !found {
 		k.errors <- ErrInvalidStream
 		return
 	}
-	checkpoint.Store(record.ShardID, seqNum)
+	k.offsets[record.Stream].Store(record.ShardID, seqNum)
 }
 
 // Commit updates check point using current checkpoints.
 func (k *Kinesumer) Commit() {
 	for stream := range k.shards {
 		var checkpoints []*shardCheckPoint
-		k.checkPoints[stream].Range(func(shardID, seqNum interface{}) bool {
+		k.offsets[stream].Range(func(shardID, seqNum interface{}) bool {
 			checkpoints = append(checkpoints, &shardCheckPoint{
 				Stream:         stream,
 				ShardID:        shardID.(string),
@@ -755,33 +712,46 @@ func (k *Kinesumer) Commit() {
 			return true
 		})
 
-		go k.commitCheckPointPerStream(checkpoints)
+		go k.commitCheckPointPerStream(stream, checkpoints)
 	}
 }
 
 // update checkpoint using sequence number.
-func (k *Kinesumer) commitCheckPointPerStream(checkpoints []*shardCheckPoint) {
+func (k *Kinesumer) commitCheckPointPerStream(stream string, checkpoints []*shardCheckPoint) {
 	if len(checkpoints) == 0 {
 		return
 	}
 
-	var wg sync.WaitGroup
+	eg, ctx := errgroup.WithContext(context.Background())
 	n := len(checkpoints)
 	for i := 0; i < n; i += 25 {
-		wg.Add(1)
-		go func(start int) {
-			defer wg.Done()
-
-			ctx, cancel := context.WithTimeout(context.Background(), k.checkPointTimeout)
+		start := i
+		eg.Go(func() error {
+			timeoutCtx, cancel := context.WithTimeout(ctx, k.commitTimeout)
 			defer cancel()
 
 			end := int(math.Min(float64(n), float64(start+25)))
-			if err := k.stateStore.UpdateCheckPoints(ctx, checkpoints[start:end]); err != nil {
-				k.errors <- errors.Wrapf(err, "failed to Commit: %s", checkpoints[0].Stream)
-			}
-		}(i)
+			return k.stateStore.UpdateCheckPoints(timeoutCtx, checkpoints[start:end])
+		})
 	}
-	wg.Wait()
+
+	if err := eg.Wait(); err != nil {
+		k.errors <- errors.Wrapf(err, "failed to Commit: %s", stream)
+		return
+	}
+	go k.cleanupOffsets(checkpoints)
+}
+
+// cleanupOffsets remove uninterested offset if offset is not updated.
+// TODO(proost): how to remove unused stream?
+func (k *Kinesumer) cleanupOffsets(checkpoints []*shardCheckPoint) {
+	for _, checkpoint := range checkpoints {
+		currentOffset, _ := k.offsets[checkpoint.Stream].LoadAndDelete(checkpoint.ShardID)
+		if currentOffset == checkpoint.SequenceNumber {
+			continue // That committed offset and current offset are same means shard may not be used.
+		}
+		k.offsets[checkpoint.Stream].LoadOrStore(checkpoint.Stream, currentOffset)
+	}
 }
 
 // Refresh refreshes the consuming streams.
