@@ -427,23 +427,14 @@ func (k *Kinesumer) deregisterConsumers() {
 func (k *Kinesumer) start() {
 	k.stop = make(chan struct{})
 
-	for stream, shardsPerStream := range k.shards {
-		for _, shard := range shardsPerStream {
-			k.wait.Add(1)
-			k.startConsuming(stream, shard)
-		}
+	if k.efoMode {
+		k.consumeEFOMode()
+	} else {
+		k.consumePolling()
 	}
 
 	if k.autoCommit {
 		go k.commitPeriodically()
-	}
-}
-
-func (k *Kinesumer) startConsuming(stream string, shard *Shard) {
-	if k.efoMode {
-		go k.consumePipe(stream, shard)
-	} else {
-		go k.consumePolling(stream, shard)
 	}
 }
 
@@ -458,6 +449,15 @@ func (k *Kinesumer) pause() {
 Dedicated consumer with EFO.
 
 */
+
+func (k *Kinesumer) consumeEFOMode() {
+	for stream, shardsPerStream := range k.shards {
+		for _, shard := range shardsPerStream {
+			k.wait.Add(1)
+			go k.consumePipe(stream, shard)
+		}
+	}
+}
 
 func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 	defer k.wait.Done()
@@ -550,7 +550,17 @@ func (k *Kinesumer) subscribeToShard(streamEvents chan kinesis.SubscribeToShardE
 Shared consumer with polling.
 
 */
-func (k *Kinesumer) consumePolling(stream string, shard *Shard) {
+
+func (k *Kinesumer) consumePolling() {
+	for stream, shardsPerStream := range k.shards {
+		for _, shard := range shardsPerStream {
+			k.wait.Add(1)
+			go k.consumeLoop(stream, shard)
+		}
+	}
+}
+
+func (k *Kinesumer) consumeLoop(stream string, shard *Shard) {
 	defer k.wait.Done()
 
 	for {
