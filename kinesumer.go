@@ -638,7 +638,7 @@ func (k *Kinesumer) Refresh(streams []string) {
 }
 
 // Errors returns error channel.
-// You must read from the Errors() channel or Kinesumer will deadlock.
+// you must read from the Errors() channel or Kinesumer will be deadlocked.
 func (k *Kinesumer) Errors() <-chan error {
 	return k.errors
 }
