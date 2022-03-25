@@ -649,7 +649,7 @@ func (k *Kinesumer) sendErrorOrIgnore(err error) {
 	select {
 	case k.errors <- err:
 	default:
-		// If there are no error listeners, error is ignored.
+		// if there are no error listeners, error is ignored.
 	}
 }
 
