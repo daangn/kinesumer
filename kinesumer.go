@@ -518,7 +518,7 @@ func (k *Kinesumer) subscribeToShard(streamEvents chan kinesis.SubscribeToShardE
 
 		output, err := k.client.SubscribeToShardWithContext(ctx, input)
 		if err != nil {
-			k.errors <- errors.WithStack(err)
+			k.sendOrDiscardError(errors.WithStack(err))
 			cancel()
 			continue
 		}
@@ -609,7 +609,8 @@ func (k *Kinesumer) consumeOnce(stream string, shard *Shard) ([]*kinesis.Record,
 
 	shardIter, err := k.getNextShardIterator(ctx, stream, shard.ID)
 	if err != nil {
-		k.errors <- errors.WithStack(err)
+		k.sendOrDiscardError(errors.WithStack(err))
+
 		var riue *kinesis.ResourceInUseException
 		return nil, errors.As(err, &riue)
 	}
@@ -619,7 +620,8 @@ func (k *Kinesumer) consumeOnce(stream string, shard *Shard) ([]*kinesis.Record,
 		ShardIterator: shardIter,
 	})
 	if err != nil {
-		k.errors <- errors.WithStack(err)
+		k.sendOrDiscardError(errors.WithStack(err))
+
 		var riue *kinesis.ResourceInUseException
 		if errors.As(err, &riue) {
 			return nil, true
@@ -699,11 +701,11 @@ func (k *Kinesumer) MarkRecord(record *Record) {
 	seqNum := *record.SequenceNumber
 	if seqNum == "" {
 		// sequence number can't be empty.
-		k.errors <- ErrEmptySequenceNumber
+		k.sendOrDiscardError(ErrEmptySequenceNumber)
 		return
 	}
 	if _, found := k.checkPoints[record.Stream]; !found {
-		k.errors <- ErrInvalidStream
+		k.sendOrDiscardError(ErrInvalidStream)
 		return
 	}
 	k.offsets[record.Stream].Store(record.ShardID, seqNum)
@@ -746,7 +748,7 @@ func (k *Kinesumer) commitCheckPointPerStream(stream string, checkpoints []*shar
 	}
 
 	if err := eg.Wait(); err != nil {
-		k.errors <- errors.Wrapf(err, "failed to Auto: %s", stream)
+		k.sendOrDiscardError(errors.Wrapf(err, "failed to Auto: %s", stream))
 		return
 	}
 	go k.cleanupOffsets(checkpoints)
@@ -780,6 +782,14 @@ func (k *Kinesumer) Refresh(streams []string) {
 // Errors returns error channel.
 func (k *Kinesumer) Errors() <-chan error {
 	return k.errors
+}
+
+func (k *Kinesumer) sendOrDiscardError(err error) {
+	select {
+	case k.errors <- err:
+	default:
+		// if there are no error listeners, error is discarded.
+	}
 }
 
 // Close stops the consuming and sync jobs.
