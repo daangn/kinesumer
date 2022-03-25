@@ -432,7 +432,7 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 
 			output, err := k.client.SubscribeToShardWithContext(ctx, input)
 			if err != nil {
-				k.errors <- errors.WithStack(err)
+				k.sendOrDiscardError(errors.WithStack(err))
 				cancel()
 				continue
 			}
@@ -555,7 +555,8 @@ func (k *Kinesumer) consumeOnce(stream string, shard *Shard) bool {
 
 	shardIter, err := k.getNextShardIterator(ctx, stream, shard.ID)
 	if err != nil {
-		k.errors <- errors.WithStack(err)
+		k.sendOrDiscardError(errors.WithStack(err))
+
 		var riue *kinesis.ResourceInUseException
 		return errors.As(err, &riue)
 	}
@@ -565,7 +566,8 @@ func (k *Kinesumer) consumeOnce(stream string, shard *Shard) bool {
 		ShardIterator: shardIter,
 	})
 	if err != nil {
-		k.errors <- errors.WithStack(err)
+		k.sendOrDiscardError(errors.WithStack(err))
+
 		var riue *kinesis.ResourceInUseException
 		if errors.As(err, &riue) {
 			return true
@@ -640,6 +642,14 @@ func (k *Kinesumer) Refresh(streams []string) {
 // Errors returns error channel.
 func (k *Kinesumer) Errors() <-chan error {
 	return k.errors
+}
+
+func (k *Kinesumer) sendOrDiscardError(err error) {
+	select {
+	case k.errors <- err:
+	default:
+		// if there are no error listeners, error is discarded.
+	}
 }
 
 // Close stops the consuming and sync jobs.
