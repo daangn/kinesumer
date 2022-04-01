@@ -69,6 +69,13 @@ func (k *Kinesumer) syncShardInfo(ctx context.Context) error {
 		return errors.WithStack(err)
 	}
 
+	// Skip if there are no alive clients.
+	numOfClient := len(clientIDs)
+	if numOfClient == 0 {
+		return nil
+	}
+
+	// Simple leader selection: take first (order by client id).
 	var idx int
 	for i, id := range clientIDs {
 		if id == k.id {
@@ -76,11 +83,9 @@ func (k *Kinesumer) syncShardInfo(ctx context.Context) error {
 			break
 		}
 	}
-	// Simple leader selection: take first (order by client id).
 	k.leader = idx == 0
 
 	// Update shard information.
-	numOfClient := len(clientIDs)
 	for _, stream := range k.streams {
 		if err := k.syncShardInfoForStream(ctx, stream, idx, numOfClient); err != nil {
 			return errors.WithStack(err)
