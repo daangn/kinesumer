@@ -308,7 +308,7 @@ func (k *Kinesumer) registerConsumers() error {
 		)
 
 		for attemptCount < maxAttemptCount {
-			attemptCount += 1
+			attemptCount++
 
 			dOutput, err := k.client.DescribeStreamConsumer(
 				&kinesis.DescribeStreamConsumerInput{
