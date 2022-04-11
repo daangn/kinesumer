@@ -300,6 +300,35 @@ func (k *Kinesumer) registerConsumers() error {
 		consumerName += "-" + k.rgn
 	}
 
+	waitForActive := func(efoMeta *efoMeta) error {
+		var (
+			attemptCount    = 0
+			maxAttemptCount = 10
+			attemptDelay    = time.Second
+		)
+
+		for attemptCount < maxAttemptCount {
+			attemptCount += 1
+
+			dOutput, err := k.client.DescribeStreamConsumer(
+				&kinesis.DescribeStreamConsumerInput{
+					ConsumerARN:  &efoMeta.consumerARN,
+					ConsumerName: &efoMeta.consumerName,
+					StreamARN:    &efoMeta.streamARN,
+				},
+			)
+			if err != nil {
+				return errors.WithStack(err)
+			}
+			if *dOutput.ConsumerDescription.ConsumerStatus == kinesis.ConsumerStatusActive {
+				return nil
+			}
+
+			time.Sleep(attemptDelay)
+		}
+		return nil
+	}
+
 	for _, stream := range k.streams {
 		dOutput, err := k.client.DescribeStream(
 			&kinesis.DescribeStreamInput{
@@ -319,7 +348,7 @@ func (k *Kinesumer) registerConsumers() error {
 		)
 
 		// In case of that consumer is already registered.
-		var riue *kinesis.ResourceInUseException
+		var riue kinesis.ResourceInUseException
 		if errors.As(err, &riue) {
 			lOutput, err := k.client.ListStreamConsumers(
 				&kinesis.ListStreamConsumersInput{
@@ -352,6 +381,11 @@ func (k *Kinesumer) registerConsumers() error {
 			consumerARN:  *rOutput.Consumer.ConsumerARN,
 			consumerName: *rOutput.Consumer.ConsumerName,
 			streamARN:    *streamARN,
+		}
+	}
+	for _, efoMeta := range k.efoMeta {
+		if err := waitForActive(efoMeta); err != nil {
+			return errors.WithStack(err)
 		}
 	}
 	return nil
