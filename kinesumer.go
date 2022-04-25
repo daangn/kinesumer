@@ -9,6 +9,7 @@ import (
 	"github.com/daangn/kinesumer/pkg/xrand"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/kinesis"
@@ -348,8 +349,11 @@ func (k *Kinesumer) registerConsumers() error {
 		)
 
 		// In case of that consumer is already registered.
-		var riue kinesis.ResourceInUseException
-		if errors.As(err, &riue) {
+		var awsErr awserr.Error
+		if errors.As(err, &awsErr) {
+			if awsErr.Code() != "ResourceInUseException" {
+				return errors.WithStack(err)
+			}
 			lOutput, err := k.client.ListStreamConsumers(
 				&kinesis.ListStreamConsumersInput{
 					MaxResults: aws.Int64(20),
@@ -373,7 +377,6 @@ func (k *Kinesumer) registerConsumers() error {
 				streamARN:    *streamARN,
 			}
 			continue
-
 		} else if err != nil {
 			return errors.WithStack(err)
 		}
