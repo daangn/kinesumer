@@ -136,8 +136,10 @@ type Kinesumer struct {
 	started chan struct{}
 
 	// To wait the running consumer loops when stopping.
-	wait  sync.WaitGroup
-	stop  chan struct{}
+	wait sync.WaitGroup
+	stop chan struct{}
+	// Lock for pausing and starting.
+	mu    *sync.Mutex
 	close chan struct{}
 }
 
@@ -214,6 +216,7 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 		started:      make(chan struct{}),
 		wait:         sync.WaitGroup{},
 		stop:         make(chan struct{}),
+		mu:           &sync.Mutex{},
 		close:        make(chan struct{}),
 	}
 
@@ -665,6 +668,9 @@ func (k *Kinesumer) getNextShardIterator(
 
 // Refresh refreshes the consuming streams.
 func (k *Kinesumer) Refresh(streams []string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
 	k.pause()
 	// TODO(mingrammer): Deregister the EFO consumers.
 
