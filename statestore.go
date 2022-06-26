@@ -10,6 +10,8 @@ import (
 	"github.com/pkg/errors"
 )
 
+//go:generate mockgen -source=statestore.go -destination=statestore_mock.go -package=kinesumer StateStore
+
 // Error codes.
 var (
 	ErrNoShardCache  = errors.New("kinesumer: shard cache not found")
@@ -255,8 +257,6 @@ func (s *stateStore) ListCheckPoints(
 }
 
 // UpdateCheckPoints updates the check point sequence numbers for a shards.
-// length of checkpoints parameter can't be no more than 25.
-// Reference: https://docs.aws.amazon.com/sdk-for-go/api/service/dynamodb/#DynamoDB.BatchWriteItem
 func (s *stateStore) UpdateCheckPoints(ctx context.Context, checkpoints []*shardCheckPoint) error {
 	var (
 		stateCheckPoints []interface{}

@@ -2,7 +2,6 @@ package kinesumer
 
 import (
 	"context"
-	"math"
 	"os"
 	"sync"
 	"time"
@@ -15,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/kinesis"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog/log"
-	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -37,8 +35,10 @@ const (
 
 // Error codes.
 var (
-	ErrEmptySequenceNumber = errors.New("kinesumer: sequence number can't be empty")
-	ErrInvalidStream       = errors.New("kinesumer: invalid stream")
+	ErrEmptySequenceNumber    = errors.New("kinesumer: sequence number can't be empty")
+	ErrInvalidStream          = errors.New("kinesumer: invalid stream")
+	errEmptyCommitCheckpoints = errors.New("kinesumer: commit checkpoints can't be empty")
+	errMarkNilRecord          = errors.New("kinesumer: nil record can't be marked")
 )
 
 // Config defines configs for the Kinesumer client.
@@ -487,7 +487,7 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 					}
 					k.records <- r
 
-					if i == n-1 {
+					if k.autoCommit && i == n-1 {
 						k.MarkRecord(r)
 					}
 				}
@@ -593,7 +593,7 @@ func (k *Kinesumer) consumeLoop(stream string, shard *Shard) {
 				}
 				k.records <- r
 
-				if i == n-1 {
+				if k.autoCommit && i == n-1 {
 					k.MarkRecord(r)
 				}
 			}
@@ -695,6 +695,7 @@ func (k *Kinesumer) commitPeriodically() {
 // MarkRecord marks the provided record as consumed.
 func (k *Kinesumer) MarkRecord(record *Record) {
 	if record == nil {
+		k.sendOrDiscardError(errMarkNilRecord)
 		return
 	}
 
@@ -713,7 +714,10 @@ func (k *Kinesumer) MarkRecord(record *Record) {
 
 // Commit updates check point using current checkpoints.
 func (k *Kinesumer) Commit() {
+	var wg sync.WaitGroup
 	for stream := range k.shards {
+		wg.Add(1)
+
 		var checkpoints []*shardCheckPoint
 		k.offsets[stream].Range(func(shardID, seqNum interface{}) bool {
 			checkpoints = append(checkpoints, &shardCheckPoint{
@@ -724,37 +728,32 @@ func (k *Kinesumer) Commit() {
 			return true
 		})
 
-		go k.commitCheckPointPerStream(stream, checkpoints)
+		go func(stream string, checkpoints []*shardCheckPoint) {
+			defer wg.Done()
+			k.commitCheckPointPerStream(stream, checkpoints)
+		}(stream, checkpoints)
 	}
+	wg.Wait()
 }
 
 // update checkpoint using sequence number.
 func (k *Kinesumer) commitCheckPointPerStream(stream string, checkpoints []*shardCheckPoint) {
 	if len(checkpoints) == 0 {
+		k.sendOrDiscardError(errEmptyCommitCheckpoints)
 		return
 	}
 
-	eg, ctx := errgroup.WithContext(context.Background())
-	n := len(checkpoints)
-	for i := 0; i < n; i += 25 {
-		start := i
-		eg.Go(func() error {
-			timeoutCtx, cancel := context.WithTimeout(ctx, k.commitTimeout)
-			defer cancel()
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), k.commitTimeout)
+	defer cancel()
 
-			end := int(math.Min(float64(n), float64(start+25)))
-			return k.stateStore.UpdateCheckPoints(timeoutCtx, checkpoints[start:end])
-		})
-	}
-
-	if err := eg.Wait(); err != nil {
-		k.sendOrDiscardError(errors.Wrapf(err, "failed to Auto: %s", stream))
+	if err := k.stateStore.UpdateCheckPoints(timeoutCtx, checkpoints); err != nil {
+		k.sendOrDiscardError(errors.Wrapf(err, "failed to commit on stream: %s", stream))
 		return
 	}
 	go k.cleanupOffsets(checkpoints)
 }
 
-// cleanupOffsets remove uninterested offset if offset is not updated.
+// cleanupOffsets remove uninterested offset which is not updated.
 // TODO(proost): how to remove unused stream?
 func (k *Kinesumer) cleanupOffsets(checkpoints []*shardCheckPoint) {
 	for _, checkpoint := range checkpoints {
@@ -762,7 +761,7 @@ func (k *Kinesumer) cleanupOffsets(checkpoints []*shardCheckPoint) {
 		if currentOffset == checkpoint.SequenceNumber {
 			continue // That committed offset and current offset are same means shard may not be used.
 		}
-		k.offsets[checkpoint.Stream].LoadOrStore(checkpoint.Stream, currentOffset)
+		k.offsets[checkpoint.Stream].LoadOrStore(checkpoint.ShardID, currentOffset)
 	}
 }
 
