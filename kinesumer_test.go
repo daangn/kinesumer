@@ -2,7 +2,10 @@ package kinesumer
 
 import (
 	"context"
+	"github.com/golang/mock/gomock"
+	"github.com/pkg/errors"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -312,7 +315,7 @@ func TestShardsRebalancing(t *testing.T) {
 	}
 }
 
-func TestKinesumerMarkRecord(t *testing.T) {
+func TestKinesumer_MarkRecordWorksProperly(t *testing.T) {
 	env := newTestEnv(t)
 	defer env.cleanUp(t)
 
@@ -344,7 +347,71 @@ func TestKinesumerMarkRecord(t *testing.T) {
 	}
 }
 
-func TestKinesumerCommit(t *testing.T) {
+func TestKinesumer_MarkRecordFails(t *testing.T) {
+	testCases := []struct {
+		name      string
+		kinesumer *Kinesumer
+		input     *Record
+		wantErr   error
+	}{
+		{
+			name: "when input record is nil",
+			kinesumer: &Kinesumer{
+				errors: make(chan error, 1),
+			},
+			input:   nil,
+			wantErr: errMarkNilRecord,
+		},
+		{
+			name: "when record sequence number is empty",
+			kinesumer: &Kinesumer{
+				errors: make(chan error, 1),
+			},
+			input: &Record{
+				Stream:  "foobar",
+				ShardID: "shardId-000",
+				Record: &kinesis.Record{
+					SequenceNumber: func() *string {
+						emptyString := ""
+						return &emptyString
+					}(),
+				},
+			},
+			wantErr: ErrEmptySequenceNumber,
+		},
+		{
+			name: "when unknown stream is given",
+			kinesumer: &Kinesumer{
+				errors: make(chan error, 1),
+				checkPoints: map[string]*sync.Map{
+					"foobar": {},
+				},
+			},
+			input: &Record{
+				Stream:  "foo",
+				ShardID: "shardId-000",
+				Record: &kinesis.Record{
+					SequenceNumber: func() *string {
+						seq := "0"
+						return &seq
+					}(),
+				},
+			},
+			wantErr: ErrInvalidStream,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			kinesumer := tc.kinesumer
+			kinesumer.MarkRecord(tc.input)
+
+			result := <-kinesumer.errors
+			assert.ErrorIs(t, result, tc.wantErr, "there should be an expected error")
+		})
+	}
+}
+
+func TestKinesumer_Commit(t *testing.T) {
 	env := newTestEnv(t)
 	defer env.cleanUp(t)
 
@@ -392,5 +459,229 @@ func TestKinesumerCommit(t *testing.T) {
 		for _, checkpoint := range checkpoints {
 			assert.EqualValues(t, expectedSeqNum, checkpoint, "sequence number should be equal")
 		}
+	}
+}
+
+func TestKinesumer_commitCheckPointPerStreamWorksProperly(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	mockStateStore := NewMockStateStore(ctrl)
+	mockStateStore.EXPECT().
+		UpdateCheckPoints(gomock.Any(), gomock.Any()).
+		Times(1).
+		DoAndReturn(func(ctx context.Context, checkpoints []*shardCheckPoint) error {
+			return nil
+		})
+
+	offsets := map[string]*sync.Map{}
+	offsets["foobar"] = &sync.Map{}
+	offsets["foobar"].Store("shardId-0", "0")
+	offsets["foobar"].Store("shardId-1", "1")
+	kinesumer := &Kinesumer{
+		offsets:       offsets,
+		commitTimeout: 2 * time.Second,
+		stateStore:    mockStateStore,
+	}
+
+	kinesumer.commitCheckPointPerStream(
+		"foobar",
+		[]*shardCheckPoint{
+			{
+				Stream:         "foobar",
+				ShardID:        "shardId-0",
+				SequenceNumber: "0",
+			},
+		},
+	)
+
+	// sleep for cleanupOffsets
+	time.Sleep(300 * time.Millisecond)
+
+	result := make(map[string]map[string]string)
+	streamResult := make(map[string]string)
+	kinesumer.offsets["foobar"].Range(func(shardID, sequence interface{}) bool {
+		streamResult[shardID.(string)] = sequence.(string)
+		return true
+	})
+	result["foobar"] = streamResult
+
+	expected := make(map[string]map[string]string)
+	expected["foobar"] = map[string]string{
+		"shardId-1": "1",
+	}
+	assert.EqualValues(t, expected, result, "they should be equal")
+}
+
+func TestKinesumer_commitCheckPointPerStreamFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	testCases := []struct {
+		name         string
+		newKinesumer func() *Kinesumer
+		input        struct {
+			stream      string
+			checkpoints []*shardCheckPoint
+		}
+		wantErrMsg string
+	}{
+		{
+			name: "when checkpoints are empty",
+			newKinesumer: func() *Kinesumer {
+				mockStateStore := NewMockStateStore(ctrl)
+				mockStateStore.EXPECT().
+					UpdateCheckPoints(gomock.Any(), gomock.Any()).
+					Times(0)
+				return &Kinesumer{
+					errors:     make(chan error, 1),
+					stateStore: mockStateStore,
+				}
+			},
+			input: struct {
+				stream      string
+				checkpoints []*shardCheckPoint
+			}{
+				stream:      "foobar",
+				checkpoints: []*shardCheckPoint{},
+			},
+			wantErrMsg: "kinesumer: commit checkpoints can't be empty",
+		},
+		{
+			name: "when state store fails to update checkpoints",
+			newKinesumer: func() *Kinesumer {
+				mockStateStore := NewMockStateStore(ctrl)
+				mockStateStore.EXPECT().
+					UpdateCheckPoints(gomock.Any(), gomock.Any()).
+					Times(1).
+					DoAndReturn(func(ctx context.Context, checkpoints []*shardCheckPoint) error {
+						return errors.New("mock error")
+					})
+				return &Kinesumer{
+					errors:     make(chan error, 1),
+					stateStore: mockStateStore,
+				}
+			},
+			input: struct {
+				stream      string
+				checkpoints []*shardCheckPoint
+			}{
+				stream: "foobar",
+				checkpoints: []*shardCheckPoint{
+					{
+						Stream:         "foobar",
+						ShardID:        "shardId-000",
+						SequenceNumber: "0",
+					},
+				},
+			},
+			wantErrMsg: "failed to commit on stream: foobar: mock error",
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			kinesumer := tc.newKinesumer()
+			kinesumer.commitCheckPointPerStream(tc.input.stream, tc.input.checkpoints)
+			result := <-kinesumer.errors
+			assert.EqualError(t, result, tc.wantErrMsg, "there should be an expected error")
+		})
+	}
+}
+
+func TestKinesumer_cleanupOffsets(t *testing.T) {
+	testCases := []struct {
+		name         string
+		newKinesumer func() *Kinesumer
+		input        []*shardCheckPoint
+		want         map[string]map[string]string // stream - shard - sequence number
+	}{
+		{
+			name: "when not updated offset exists",
+			newKinesumer: func() *Kinesumer {
+				offsets := map[string]*sync.Map{}
+
+				offsets["foobar"] = &sync.Map{}
+				offsets["foobar"].Store("shardId-0", "0")
+
+				offsets["foo"] = &sync.Map{}
+				offsets["foo"].Store("shardId-1", "1")
+				return &Kinesumer{
+					offsets: offsets,
+				}
+			},
+			input: []*shardCheckPoint{
+				{
+					Stream:         "foobar",
+					ShardID:        "shardId-0",
+					SequenceNumber: "0",
+				},
+				{
+					Stream:         "foo",
+					ShardID:        "shardId-1",
+					SequenceNumber: "1",
+				},
+			},
+			want: map[string]map[string]string{},
+		},
+		{
+			name: "when updated offset exists",
+			newKinesumer: func() *Kinesumer {
+				offsets := map[string]*sync.Map{}
+
+				offsets["foobar"] = &sync.Map{}
+				offsets["foobar"].Store("shardId-0", "10")
+
+				offsets["foo"] = &sync.Map{}
+				offsets["foo"].Store("shardId-1", "20")
+				return &Kinesumer{
+					offsets: offsets,
+				}
+			},
+			input: []*shardCheckPoint{
+				{
+					Stream:         "foobar",
+					ShardID:        "shardId-0",
+					SequenceNumber: "0",
+				},
+				{
+					Stream:         "foo",
+					ShardID:        "shardId-1",
+					SequenceNumber: "1",
+				},
+			},
+			want: map[string]map[string]string{
+				"foobar": {
+					"shardId-0": "10",
+				},
+				"foo": {
+					"shardId-1": "20",
+				},
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			kinesumer := tc.newKinesumer()
+			kinesumer.cleanupOffsets(tc.input)
+
+			result := make(map[string]map[string]string)
+			for _, checkpoint := range tc.input {
+				streamResult := make(map[string]string)
+				kinesumer.offsets[checkpoint.Stream].Range(func(shardID, sequence interface{}) bool {
+					streamResult[shardID.(string)] = sequence.(string)
+					return true
+				})
+				result[checkpoint.Stream] = streamResult
+			}
+
+			for stream, expectedInStream := range tc.want {
+				if assert.NotEmpty(t, result[stream]) {
+					streamResult := result[stream]
+					for expectedShardID, expectedSeqNum := range expectedInStream {
+						if assert.NotEmpty(t, streamResult[expectedShardID]) {
+							assert.EqualValues(t, streamResult[expectedShardID], expectedSeqNum, "they should be equal")
+						}
+					}
+				}
+			}
+		})
 	}
 }
