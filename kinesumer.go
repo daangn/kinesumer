@@ -717,17 +717,18 @@ func (k *Kinesumer) Commit() {
 	for stream := range k.shards {
 		wg.Add(1)
 
-		var checkpoints []*shardCheckPoint
+		var checkpoints []*ShardCheckPoint
 		k.offsets[stream].Range(func(shardID, seqNum interface{}) bool {
-			checkpoints = append(checkpoints, &shardCheckPoint{
+			checkpoints = append(checkpoints, &ShardCheckPoint{
 				Stream:         stream,
 				ShardID:        shardID.(string),
 				SequenceNumber: seqNum.(string),
+				UpdatedAt:      time.Now(),
 			})
 			return true
 		})
 
-		go func(stream string, checkpoints []*shardCheckPoint) {
+		go func(stream string, checkpoints []*ShardCheckPoint) {
 			defer wg.Done()
 			k.commitCheckPointPerStream(stream, checkpoints)
 		}(stream, checkpoints)
@@ -736,7 +737,7 @@ func (k *Kinesumer) Commit() {
 }
 
 // update checkpoint using sequence number.
-func (k *Kinesumer) commitCheckPointPerStream(stream string, checkpoints []*shardCheckPoint) {
+func (k *Kinesumer) commitCheckPointPerStream(stream string, checkpoints []*ShardCheckPoint) {
 	if len(checkpoints) == 0 {
 		k.sendOrDiscardError(errEmptyCommitCheckpoints)
 		return
@@ -754,7 +755,7 @@ func (k *Kinesumer) commitCheckPointPerStream(stream string, checkpoints []*shar
 
 // cleanupOffsets remove uninterested offset which is not updated.
 // TODO(proost): how to remove unused stream?
-func (k *Kinesumer) cleanupOffsets(checkpoints []*shardCheckPoint) {
+func (k *Kinesumer) cleanupOffsets(checkpoints []*ShardCheckPoint) {
 	for _, checkpoint := range checkpoints {
 		currentOffset, _ := k.offsets[checkpoint.Stream].LoadAndDelete(checkpoint.ShardID)
 		if currentOffset == checkpoint.SequenceNumber {

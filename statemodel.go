@@ -36,11 +36,12 @@ func buildClientKey(app string) string {
 	return buildKeyFn(clientKeyFmt, app)
 }
 
-// shardCheckPoint manages a shard check point
-type shardCheckPoint struct {
+// ShardCheckPoint manages a shard check point.
+type ShardCheckPoint struct {
 	Stream         string
 	ShardID        string
 	SequenceNumber string
+	UpdatedAt      time.Time
 }
 
 // stateCheckPoint manages record check points.

@@ -469,9 +469,7 @@ func TestKinesumer_commitCheckPointPerStreamWorksProperly(t *testing.T) {
 	mockStateStore.EXPECT().
 		UpdateCheckPoints(gomock.Any(), gomock.Any()).
 		Times(1).
-		DoAndReturn(func(ctx context.Context, checkpoints []*shardCheckPoint) error {
-			return nil
-		})
+		Return(nil)
 
 	offsets := map[string]*sync.Map{}
 	offsets["foobar"] = &sync.Map{}
@@ -485,7 +483,7 @@ func TestKinesumer_commitCheckPointPerStreamWorksProperly(t *testing.T) {
 
 	kinesumer.commitCheckPointPerStream(
 		"foobar",
-		[]*shardCheckPoint{
+		[]*ShardCheckPoint{
 			{
 				Stream:         "foobar",
 				ShardID:        "shardId-0",
@@ -494,22 +492,27 @@ func TestKinesumer_commitCheckPointPerStreamWorksProperly(t *testing.T) {
 		},
 	)
 
-	// sleep for cleanupOffsets
-	time.Sleep(300 * time.Millisecond)
-
-	result := make(map[string]map[string]string)
-	streamResult := make(map[string]string)
-	kinesumer.offsets["foobar"].Range(func(shardID, sequence interface{}) bool {
-		streamResult[shardID.(string)] = sequence.(string)
-		return true
-	})
-	result["foobar"] = streamResult
-
 	expected := make(map[string]map[string]string)
 	expected["foobar"] = map[string]string{
 		"shardId-1": "1",
 	}
-	assert.EqualValues(t, expected, result, "they should be equal")
+
+	assert.Eventually(
+		t,
+		func() bool {
+			result := make(map[string]map[string]string)
+			streamResult := make(map[string]string)
+			kinesumer.offsets["foobar"].Range(func(shardID, sequence interface{}) bool {
+				streamResult[shardID.(string)] = sequence.(string)
+				return true
+			})
+			result["foobar"] = streamResult
+			return assert.EqualValues(t, expected, result)
+		},
+		600*time.Millisecond,
+		100*time.Millisecond,
+		"they should be equal",
+	)
 }
 
 func TestKinesumer_commitCheckPointPerStreamFails(t *testing.T) {
@@ -520,7 +523,7 @@ func TestKinesumer_commitCheckPointPerStreamFails(t *testing.T) {
 		newKinesumer func() *Kinesumer
 		input        struct {
 			stream      string
-			checkpoints []*shardCheckPoint
+			checkpoints []*ShardCheckPoint
 		}
 		wantErrMsg string
 	}{
@@ -538,10 +541,10 @@ func TestKinesumer_commitCheckPointPerStreamFails(t *testing.T) {
 			},
 			input: struct {
 				stream      string
-				checkpoints []*shardCheckPoint
+				checkpoints []*ShardCheckPoint
 			}{
 				stream:      "foobar",
-				checkpoints: []*shardCheckPoint{},
+				checkpoints: []*ShardCheckPoint{},
 			},
 			wantErrMsg: "kinesumer: commit checkpoints can't be empty",
 		},
@@ -552,9 +555,7 @@ func TestKinesumer_commitCheckPointPerStreamFails(t *testing.T) {
 				mockStateStore.EXPECT().
 					UpdateCheckPoints(gomock.Any(), gomock.Any()).
 					Times(1).
-					DoAndReturn(func(ctx context.Context, checkpoints []*shardCheckPoint) error {
-						return errors.New("mock error")
-					})
+					Return(errors.New("mock error"))
 				return &Kinesumer{
 					errors:     make(chan error, 1),
 					stateStore: mockStateStore,
@@ -562,10 +563,10 @@ func TestKinesumer_commitCheckPointPerStreamFails(t *testing.T) {
 			},
 			input: struct {
 				stream      string
-				checkpoints []*shardCheckPoint
+				checkpoints []*ShardCheckPoint
 			}{
 				stream: "foobar",
-				checkpoints: []*shardCheckPoint{
+				checkpoints: []*ShardCheckPoint{
 					{
 						Stream:         "foobar",
 						ShardID:        "shardId-000",
@@ -590,7 +591,7 @@ func TestKinesumer_cleanupOffsets(t *testing.T) {
 	testCases := []struct {
 		name         string
 		newKinesumer func() *Kinesumer
-		input        []*shardCheckPoint
+		input        []*ShardCheckPoint
 		want         map[string]map[string]string // stream - shard - sequence number
 	}{
 		{
@@ -607,7 +608,7 @@ func TestKinesumer_cleanupOffsets(t *testing.T) {
 					offsets: offsets,
 				}
 			},
-			input: []*shardCheckPoint{
+			input: []*ShardCheckPoint{
 				{
 					Stream:         "foobar",
 					ShardID:        "shardId-0",
@@ -635,7 +636,7 @@ func TestKinesumer_cleanupOffsets(t *testing.T) {
 					offsets: offsets,
 				}
 			},
-			input: []*shardCheckPoint{
+			input: []*ShardCheckPoint{
 				{
 					Stream:         "foobar",
 					ShardID:        "shardId-0",

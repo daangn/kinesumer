@@ -136,7 +136,7 @@ func (mr *MockStateStoreMockRecorder) RegisterClient(ctx, clientID interface{}) 
 }
 
 // UpdateCheckPoints mocks base method.
-func (m *MockStateStore) UpdateCheckPoints(ctx context.Context, checkpoints []*shardCheckPoint) error {
+func (m *MockStateStore) UpdateCheckPoints(ctx context.Context, checkpoints []*ShardCheckPoint) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "UpdateCheckPoints", ctx, checkpoints)
 	ret0, _ := ret[0].(error)

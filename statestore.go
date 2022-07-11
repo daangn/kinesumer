@@ -29,7 +29,7 @@ type (
 		PingClientAliveness(ctx context.Context, clientID string) error
 		PruneClients(ctx context.Context) error
 		ListCheckPoints(ctx context.Context, stream string, shardIDs []string) (map[string]string, error)
-		UpdateCheckPoints(ctx context.Context, checkpoints []*shardCheckPoint) error
+		UpdateCheckPoints(ctx context.Context, checkpoints []*ShardCheckPoint) error
 	}
 
 	db struct {
@@ -257,18 +257,15 @@ func (s *stateStore) ListCheckPoints(
 }
 
 // UpdateCheckPoints updates the check point sequence numbers for multiple shards.
-func (s *stateStore) UpdateCheckPoints(ctx context.Context, checkpoints []*shardCheckPoint) error {
-	var (
-		stateCheckPoints []interface{}
-		now              = time.Now()
-	)
-	for _, checkpoint := range checkpoints {
-		stateCheckPoints = append(stateCheckPoints, stateCheckPoint{
+func (s *stateStore) UpdateCheckPoints(ctx context.Context, checkpoints []*ShardCheckPoint) error {
+	stateCheckPoints := make([]interface{}, len(checkpoints))
+	for i, checkpoint := range checkpoints {
+		stateCheckPoints[i] = stateCheckPoint{
 			StreamKey:      buildCheckPointKey(s.app, checkpoint.Stream),
 			ShardID:        checkpoint.ShardID,
 			SequenceNumber: checkpoint.SequenceNumber,
-			LastUpdate:     now,
-		})
+			LastUpdate:     checkpoint.UpdatedAt,
+		}
 	}
 
 	// TODO(proost): check written bytes
