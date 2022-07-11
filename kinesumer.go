@@ -66,7 +66,6 @@ type Config struct {
 	ScanTimeout  time.Duration
 	ScanInterval time.Duration
 
-	// These configs are used in EFO mode.
 	EFOMode bool // On/off the Enhanced Fan-Out feature.
 
 	// This config is used for how to manage sequence number.
@@ -157,7 +156,7 @@ type Kinesumer struct {
 	shards map[string]Shards
 	// To cache the last sequence numbers for each shard.
 	checkPoints map[string]*sync.Map
-	// offsets holds sequence numbers which will be committed.
+	// offsets holds uncommitted sequence numbers.
 	offsets map[string]*sync.Map
 	// To manage the next shard iterators for each shard.
 	nextIters map[string]*sync.Map

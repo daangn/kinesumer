@@ -37,7 +37,6 @@ func buildClientKey(app string) string {
 }
 
 // shardCheckPoint manages a shard check point
-// shardCheckPoint is DTO(Data Transfer Object) for kinesumer&state store layers
 type shardCheckPoint struct {
 	Stream         string
 	ShardID        string

@@ -256,7 +256,7 @@ func (s *stateStore) ListCheckPoints(
 	return seqMap, nil
 }
 
-// UpdateCheckPoints updates the check point sequence numbers for a shards.
+// UpdateCheckPoints updates the check point sequence numbers for multiple shards.
 func (s *stateStore) UpdateCheckPoints(ctx context.Context, checkpoints []*shardCheckPoint) error {
 	var (
 		stateCheckPoints []interface{}
