@@ -730,14 +730,14 @@ func (k *Kinesumer) Commit() {
 
 		go func(stream string, checkpoints []*ShardCheckPoint) {
 			defer wg.Done()
-			k.commitCheckPointPerStream(stream, checkpoints)
+			k.commitCheckPointsPerStream(stream, checkpoints)
 		}(stream, checkpoints)
 	}
 	wg.Wait()
 }
 
-// update checkpoint using sequence number.
-func (k *Kinesumer) commitCheckPointPerStream(stream string, checkpoints []*ShardCheckPoint) {
+// commitCheckPointsPerStream updates checkpoints using sequence number.
+func (k *Kinesumer) commitCheckPointsPerStream(stream string, checkpoints []*ShardCheckPoint) {
 	if len(checkpoints) == 0 {
 		k.sendOrDiscardError(errEmptyCommitCheckpoints)
 		return

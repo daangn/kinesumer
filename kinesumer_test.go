@@ -2,12 +2,13 @@ package kinesumer
 
 import (
 	"context"
-	"github.com/golang/mock/gomock"
-	"github.com/pkg/errors"
 	"sort"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/golang/mock/gomock"
+	"github.com/pkg/errors"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -481,7 +482,7 @@ func TestKinesumer_commitCheckPointPerStreamWorksProperly(t *testing.T) {
 		stateStore:    mockStateStore,
 	}
 
-	kinesumer.commitCheckPointPerStream(
+	kinesumer.commitCheckPointsPerStream(
 		"foobar",
 		[]*ShardCheckPoint{
 			{
@@ -580,7 +581,7 @@ func TestKinesumer_commitCheckPointPerStreamFails(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			kinesumer := tc.newKinesumer()
-			kinesumer.commitCheckPointPerStream(tc.input.stream, tc.input.checkpoints)
+			kinesumer.commitCheckPointsPerStream(tc.input.stream, tc.input.checkpoints)
 			result := <-kinesumer.errors
 			assert.EqualError(t, result, tc.wantErrMsg, "there should be an expected error")
 		})
