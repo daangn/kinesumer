@@ -576,9 +576,7 @@ func (k *Kinesumer) consumeLoop(stream string, shard *Shard) {
 			if closed {
 				return // Close consume loop if shard is CLOSED and has no data.
 			}
-			if records == nil {
-				continue
-			}
+
 			n := len(records)
 			if n == 0 {
 				continue
