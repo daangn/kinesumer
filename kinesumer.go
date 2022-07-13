@@ -704,7 +704,7 @@ func (k *Kinesumer) MarkRecord(record *Record) {
 		k.sendOrDiscardError(ErrEmptySequenceNumber)
 		return
 	}
-	if _, found := k.checkPoints[record.Stream]; !found {
+	if _, ok := k.checkPoints[record.Stream]; !ok {
 		k.sendOrDiscardError(ErrInvalidStream)
 		return
 	}
