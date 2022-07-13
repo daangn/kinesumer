@@ -739,7 +739,6 @@ func (k *Kinesumer) Commit() {
 // commitCheckPointsPerStream updates checkpoints using sequence number.
 func (k *Kinesumer) commitCheckPointsPerStream(stream string, checkpoints []*ShardCheckPoint) {
 	if len(checkpoints) == 0 {
-		k.sendOrDiscardError(errEmptyCommitCheckpoints)
 		return
 	}
 
