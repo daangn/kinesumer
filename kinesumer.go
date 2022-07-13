@@ -69,11 +69,11 @@ type Config struct {
 	EFOMode bool // On/off the Enhanced Fan-Out feature.
 
 	// This config is used for how to manage sequence number.
-	Commit *CommitProperties
+	Commit *CommitConfig
 }
 
-// CommitProperties holds options for how to offset handled.
-type CommitProperties struct {
+// CommitConfig holds options for how to offset handled.
+type CommitConfig struct {
 	// Whether to auto-commit updated sequence number. (default is true)
 	Auto bool
 
@@ -85,8 +85,8 @@ type CommitProperties struct {
 }
 
 // NewDefaultCommitProperties returns a new default offset management configuration.
-func NewDefaultCommitProperties() *CommitProperties {
-	return &CommitProperties{
+func NewDefaultCommitProperties() *CommitConfig {
+	return &CommitConfig{
 		Auto:     true,
 		Interval: defaultCommitInterval,
 		Timeout:  defaultCommitTimeout,
