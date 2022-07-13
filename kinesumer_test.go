@@ -529,27 +529,6 @@ func TestKinesumer_commitCheckPointPerStreamFails(t *testing.T) {
 		wantErrMsg string
 	}{
 		{
-			name: "when checkpoints are empty",
-			newKinesumer: func() *Kinesumer {
-				mockStateStore := NewMockStateStore(ctrl)
-				mockStateStore.EXPECT().
-					UpdateCheckPoints(gomock.Any(), gomock.Any()).
-					Times(0)
-				return &Kinesumer{
-					errors:     make(chan error, 1),
-					stateStore: mockStateStore,
-				}
-			},
-			input: struct {
-				stream      string
-				checkpoints []*ShardCheckPoint
-			}{
-				stream:      "foobar",
-				checkpoints: []*ShardCheckPoint{},
-			},
-			wantErrMsg: "kinesumer: commit checkpoints can't be empty",
-		},
-		{
 			name: "when state store fails to update checkpoints",
 			newKinesumer: func() *Kinesumer {
 				mockStateStore := NewMockStateStore(ctrl)
