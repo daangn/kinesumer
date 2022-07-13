@@ -466,9 +466,17 @@ func TestKinesumer_Commit(t *testing.T) {
 func TestKinesumer_commitCheckPointPerStreamWorksProperly(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
+	input := []*ShardCheckPoint{
+		{
+			Stream:         "foobar",
+			ShardID:        "shardId-0",
+			SequenceNumber: "0",
+		},
+	}
+
 	mockStateStore := NewMockStateStore(ctrl)
 	mockStateStore.EXPECT().
-		UpdateCheckPoints(gomock.Any(), gomock.Any()).
+		UpdateCheckPoints(gomock.Any(), input).
 		Times(1).
 		Return(nil)
 
@@ -482,38 +490,13 @@ func TestKinesumer_commitCheckPointPerStreamWorksProperly(t *testing.T) {
 		stateStore:    mockStateStore,
 	}
 
-	kinesumer.commitCheckPointsPerStream(
-		"foobar",
-		[]*ShardCheckPoint{
-			{
-				Stream:         "foobar",
-				ShardID:        "shardId-0",
-				SequenceNumber: "0",
-			},
-		},
-	)
+	kinesumer.commitCheckPointsPerStream("foobar", input)
 
-	expected := make(map[string]map[string]string)
-	expected["foobar"] = map[string]string{
-		"shardId-1": "1",
+	select {
+	case err := <-kinesumer.Errors():
+		assert.NoError(t, err, "there should be no error")
+	default:
 	}
-
-	assert.Eventually(
-		t,
-		func() bool {
-			result := make(map[string]map[string]string)
-			streamResult := make(map[string]string)
-			kinesumer.offsets["foobar"].Range(func(shardID, sequence interface{}) bool {
-				streamResult[shardID.(string)] = sequence.(string)
-				return true
-			})
-			result["foobar"] = streamResult
-			return assert.EqualValues(t, expected, result)
-		},
-		600*time.Millisecond,
-		100*time.Millisecond,
-		"they should be equal",
-	)
 }
 
 func TestKinesumer_commitCheckPointPerStreamFails(t *testing.T) {
@@ -563,106 +546,6 @@ func TestKinesumer_commitCheckPointPerStreamFails(t *testing.T) {
 			kinesumer.commitCheckPointsPerStream(tc.input.stream, tc.input.checkpoints)
 			result := <-kinesumer.errors
 			assert.EqualError(t, result, tc.wantErrMsg, "there should be an expected error")
-		})
-	}
-}
-
-func TestKinesumer_cleanupOffsets(t *testing.T) {
-	testCases := []struct {
-		name         string
-		newKinesumer func() *Kinesumer
-		input        []*ShardCheckPoint
-		want         map[string]map[string]string // stream - shard - sequence number
-	}{
-		{
-			name: "when not updated offset exists",
-			newKinesumer: func() *Kinesumer {
-				offsets := map[string]*sync.Map{}
-
-				offsets["foobar"] = &sync.Map{}
-				offsets["foobar"].Store("shardId-0", "0")
-
-				offsets["foo"] = &sync.Map{}
-				offsets["foo"].Store("shardId-1", "1")
-				return &Kinesumer{
-					offsets: offsets,
-				}
-			},
-			input: []*ShardCheckPoint{
-				{
-					Stream:         "foobar",
-					ShardID:        "shardId-0",
-					SequenceNumber: "0",
-				},
-				{
-					Stream:         "foo",
-					ShardID:        "shardId-1",
-					SequenceNumber: "1",
-				},
-			},
-			want: map[string]map[string]string{},
-		},
-		{
-			name: "when updated offset exists",
-			newKinesumer: func() *Kinesumer {
-				offsets := map[string]*sync.Map{}
-
-				offsets["foobar"] = &sync.Map{}
-				offsets["foobar"].Store("shardId-0", "10")
-
-				offsets["foo"] = &sync.Map{}
-				offsets["foo"].Store("shardId-1", "20")
-				return &Kinesumer{
-					offsets: offsets,
-				}
-			},
-			input: []*ShardCheckPoint{
-				{
-					Stream:         "foobar",
-					ShardID:        "shardId-0",
-					SequenceNumber: "0",
-				},
-				{
-					Stream:         "foo",
-					ShardID:        "shardId-1",
-					SequenceNumber: "1",
-				},
-			},
-			want: map[string]map[string]string{
-				"foobar": {
-					"shardId-0": "10",
-				},
-				"foo": {
-					"shardId-1": "20",
-				},
-			},
-		},
-	}
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			kinesumer := tc.newKinesumer()
-			kinesumer.cleanupOffsets(tc.input)
-
-			result := make(map[string]map[string]string)
-			for _, checkpoint := range tc.input {
-				streamResult := make(map[string]string)
-				kinesumer.offsets[checkpoint.Stream].Range(func(shardID, sequence interface{}) bool {
-					streamResult[shardID.(string)] = sequence.(string)
-					return true
-				})
-				result[checkpoint.Stream] = streamResult
-			}
-
-			for stream, expectedInStream := range tc.want {
-				if assert.NotEmpty(t, result[stream]) {
-					streamResult := result[stream]
-					for expectedShardID, expectedSeqNum := range expectedInStream {
-						if assert.NotEmpty(t, streamResult[expectedShardID]) {
-							assert.EqualValues(t, streamResult[expectedShardID], expectedSeqNum, "they should be equal")
-						}
-					}
-				}
-			}
 		})
 	}
 }

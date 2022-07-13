@@ -470,6 +470,7 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 		case e, ok := <-streamEvents:
 			if !ok {
 				k.Commit()
+				k.offsets[stream].Delete(shard.ID)
 				return
 			}
 			if se, ok := e.(*kinesis.SubscribeToShardEvent); ok {
@@ -574,6 +575,7 @@ func (k *Kinesumer) consumeLoop(stream string, shard *Shard) {
 			time.Sleep(k.scanInterval)
 			records, closed := k.consumeOnce(stream, shard)
 			if closed {
+				k.offsets[stream].Delete(shard.ID)
 				return // Close consume loop if shard is CLOSED and has no data.
 			}
 
@@ -737,19 +739,6 @@ func (k *Kinesumer) commitCheckPointsPerStream(stream string, checkpoints []*Sha
 	if err := k.stateStore.UpdateCheckPoints(timeoutCtx, checkpoints); err != nil {
 		k.sendOrDiscardError(errors.Wrapf(err, "failed to commit on stream: %s", stream))
 		return
-	}
-	go k.cleanupOffsets(checkpoints)
-}
-
-// cleanupOffsets remove uninterested offset which is not updated.
-// TODO(proost): how to remove unused stream?
-func (k *Kinesumer) cleanupOffsets(checkpoints []*ShardCheckPoint) {
-	for _, checkpoint := range checkpoints {
-		currentOffset, _ := k.offsets[checkpoint.Stream].LoadAndDelete(checkpoint.ShardID)
-		if currentOffset == checkpoint.SequenceNumber {
-			continue // That committed offset and current offset are same means shard may not be used.
-		}
-		k.offsets[checkpoint.Stream].LoadOrStore(checkpoint.ShardID, currentOffset)
 	}
 }
 
