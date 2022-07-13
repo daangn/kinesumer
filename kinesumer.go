@@ -667,23 +667,14 @@ func (k *Kinesumer) getNextShardIterator(
 	return output.ShardIterator, nil
 }
 
-/*
-
-Sequence Number management
-
-*/
 func (k *Kinesumer) commitPeriodically() {
 	var checkPointTicker = time.NewTicker(k.commitInterval)
 
 	for {
 		select {
 		case <-k.stop:
-			// If stop channel is closed, consumer goroutine must call Auto function.
-			// Because commitPeriodically function doesn't know whether remained events from Kinesis exist.
 			return
 		case <-k.close:
-			// If close channel is closed, consumer goroutine must call Auto function.
-			// Because commitPeriodically function doesn't know whether remained events from Kinesis exist.
 			return
 		case <-checkPointTicker.C:
 			k.Commit()
