@@ -549,3 +549,136 @@ func TestKinesumer_commitCheckPointPerStreamFails(t *testing.T) {
 		})
 	}
 }
+
+func TestKinesumer_cleanupOffsetsWorksFine(t *testing.T) {
+	testCases := []struct {
+		name         string
+		newKinesumer func() *Kinesumer
+		input        struct {
+			stream string
+			shard  *Shard
+		}
+		want map[string]map[string]string // stream - shard - sequence number
+	}{
+		{
+			name: "when clean up existing offset",
+			newKinesumer: func() *Kinesumer {
+				offsets := map[string]*sync.Map{}
+
+				offsets["foobar"] = &sync.Map{}
+				offsets["foobar"].Store("shardId-0", "0")
+
+				offsets["foo"] = &sync.Map{}
+				offsets["foo"].Store("shardId-1", "1")
+				return &Kinesumer{
+					offsets: offsets,
+				}
+			},
+			input: struct {
+				stream string
+				shard  *Shard
+			}{
+				stream: "foobar",
+				shard: &Shard{
+					ID: "shardId-0",
+				},
+			},
+			want: map[string]map[string]string{
+				"foo": {
+					"shardId-1": "1",
+				},
+			},
+		},
+		{
+			name: "when clean up non-existent stream",
+			newKinesumer: func() *Kinesumer {
+				offsets := map[string]*sync.Map{}
+
+				offsets["foobar"] = &sync.Map{}
+				offsets["foobar"].Store("shardId-0", "10")
+
+				offsets["foo"] = &sync.Map{}
+				offsets["foo"].Store("shardId-1", "20")
+				return &Kinesumer{
+					offsets: offsets,
+				}
+			},
+			input: struct {
+				stream string
+				shard  *Shard
+			}{
+				stream: "bar",
+				shard: &Shard{
+					ID: "shardId-2",
+				},
+			},
+			want: map[string]map[string]string{
+				"foobar": {
+					"shardId-0": "10",
+				},
+				"foo": {
+					"shardId-1": "20",
+				},
+			},
+		},
+		{
+			name: "when clean up non-existent shard",
+			newKinesumer: func() *Kinesumer {
+				offsets := map[string]*sync.Map{}
+
+				offsets["foobar"] = &sync.Map{}
+				offsets["foobar"].Store("shardId-0", "10")
+
+				offsets["foo"] = &sync.Map{}
+				offsets["foo"].Store("shardId-1", "20")
+				return &Kinesumer{
+					offsets: offsets,
+				}
+			},
+			input: struct {
+				stream string
+				shard  *Shard
+			}{
+				stream: "foo",
+				shard: &Shard{
+					ID: "shardId-2",
+				},
+			},
+			want: map[string]map[string]string{
+				"foobar": {
+					"shardId-0": "10",
+				},
+				"foo": {
+					"shardId-1": "20",
+				},
+			},
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			kinesumer := tc.newKinesumer()
+			kinesumer.cleanupOffsets(tc.input.stream, tc.input.shard)
+
+			result := make(map[string]map[string]string)
+			for stream, offsets := range kinesumer.offsets {
+				streamResult := make(map[string]string)
+				offsets.Range(func(shardID, sequence interface{}) bool {
+					streamResult[shardID.(string)] = sequence.(string)
+					return true
+				})
+				result[stream] = streamResult
+			}
+
+			for stream, expectedInStream := range tc.want {
+				if assert.NotEmpty(t, result[stream]) {
+					streamResult := result[stream]
+					for expectedShardID, expectedSeqNum := range expectedInStream {
+						if assert.NotEmpty(t, streamResult[expectedShardID]) {
+							assert.EqualValues(t, streamResult[expectedShardID], expectedSeqNum, "they should be equal")
+						}
+					}
+				}
+			}
+		})
+	}
+}
