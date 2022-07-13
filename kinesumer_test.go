@@ -316,7 +316,7 @@ func TestShardsRebalancing(t *testing.T) {
 	}
 }
 
-func TestKinesumer_MarkRecordWorksProperly(t *testing.T) {
+func TestKinesumer_MarkRecordWorksFine(t *testing.T) {
 	env := newTestEnv(t)
 	defer env.cleanUp(t)
 
@@ -463,7 +463,7 @@ func TestKinesumer_Commit(t *testing.T) {
 	}
 }
 
-func TestKinesumer_commitCheckPointPerStreamWorksProperly(t *testing.T) {
+func TestKinesumer_commitCheckPointPerStreamWorksFine(t *testing.T) {
 	ctrl := gomock.NewController(t)
 
 	input := []*ShardCheckPoint{
