@@ -36,6 +36,14 @@ func buildClientKey(app string) string {
 	return buildKeyFn(clientKeyFmt, app)
 }
 
+// ShardCheckPoint manages a shard check point.
+type ShardCheckPoint struct {
+	Stream         string
+	ShardID        string
+	SequenceNumber string
+	UpdatedAt      time.Time
+}
+
 // stateCheckPoint manages record check points.
 type stateCheckPoint struct {
 	StreamKey      string    `dynamo:"pk,pk"`

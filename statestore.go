@@ -10,6 +10,8 @@ import (
 	"github.com/pkg/errors"
 )
 
+//go:generate mockgen -source=statestore.go -destination=statestore_mock.go -package=kinesumer StateStore
+
 // Error codes.
 var (
 	ErrNoShardCache  = errors.New("kinesumer: shard cache not found")
@@ -27,7 +29,7 @@ type (
 		PingClientAliveness(ctx context.Context, clientID string) error
 		PruneClients(ctx context.Context) error
 		ListCheckPoints(ctx context.Context, stream string, shardIDs []string) (map[string]string, error)
-		UpdateCheckPoint(ctx context.Context, stream, shardID, seq string) error
+		UpdateCheckPoints(ctx context.Context, checkpoints []*ShardCheckPoint) error
 	}
 
 	db struct {
@@ -233,7 +235,7 @@ func (s *stateStore) ListCheckPoints(
 	for _, id := range shardIDs {
 		keys = append(
 			keys,
-			dynamo.Keys{buildCheckPointKey(s.app, id), stream},
+			dynamo.Keys{buildCheckPointKey(s.app, stream), id},
 		)
 	}
 
@@ -254,21 +256,25 @@ func (s *stateStore) ListCheckPoints(
 	return seqMap, nil
 }
 
-// UpdateCheckPoint updates the check point sequence number for a shard.
-func (s *stateStore) UpdateCheckPoint(
-	ctx context.Context, stream, shardID, seq string,
-) error {
-	var (
-		key = buildCheckPointKey(s.app, stream)
-		now = time.Now()
-	)
-	checkPoint := stateCheckPoint{
-		StreamKey:      key,
-		ShardID:        shardID,
-		SequenceNumber: seq,
-		LastUpdate:     now,
+// UpdateCheckPoints updates the check point sequence numbers for multiple shards.
+func (s *stateStore) UpdateCheckPoints(ctx context.Context, checkpoints []*ShardCheckPoint) error {
+	stateCheckPoints := make([]interface{}, len(checkpoints))
+	for i, checkpoint := range checkpoints {
+		stateCheckPoints[i] = stateCheckPoint{
+			StreamKey:      buildCheckPointKey(s.app, checkpoint.Stream),
+			ShardID:        checkpoint.ShardID,
+			SequenceNumber: checkpoint.SequenceNumber,
+			LastUpdate:     checkpoint.UpdatedAt,
+		}
 	}
-	if err := s.db.table.Put(checkPoint).RunWithContext(ctx); err != nil {
+
+	// TODO(proost): check written bytes
+	_, err := s.db.table.
+		Batch("pk", "sk").
+		Write().
+		Put(stateCheckPoints...).
+		RunWithContext(ctx)
+	if err != nil {
 		return errors.WithStack(err)
 	}
 	return nil

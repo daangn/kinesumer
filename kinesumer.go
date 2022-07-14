@@ -23,8 +23,8 @@ const (
 	syncInterval = 5*time.Second + jitter
 	syncTimeout  = 5*time.Second - jitter
 
-	checkPointTimeout  = 2 * time.Second
-	checkPointInterval = 5 * time.Second // For EFO mode.
+	defaultCommitTimeout  = 2 * time.Second
+	defaultCommitInterval = 5 * time.Second
 
 	defaultScanLimit int64 = 2000
 
@@ -32,6 +32,14 @@ const (
 	defaultScanInterval = 10 * time.Millisecond
 
 	recordsChanBuffer = 20
+)
+
+// Error codes.
+var (
+	ErrEmptySequenceNumber    = errors.New("kinesumer: sequence number can't be empty")
+	ErrInvalidStream          = errors.New("kinesumer: invalid stream")
+	errEmptyCommitCheckpoints = errors.New("kinesumer: commit checkpoints can't be empty")
+	errMarkNilRecord          = errors.New("kinesumer: nil record can't be marked")
 )
 
 // Config defines configs for the Kinesumer client.
@@ -43,7 +51,6 @@ type Config struct {
 	// Kinesis configs.
 	KinesisRegion   string
 	KinesisEndpoint string // Only for local server.
-	EFOMode         bool   // On/off the Enhanced Fan-Out feature.
 	// If you want to consume messages from Kinesis in a different account,
 	// you need to set up the IAM role to access to target account, and pass the role arn here.
 	// Reference: https://docs.aws.amazon.com/kinesisanalytics/latest/java/examples-cross.html.
@@ -59,11 +66,38 @@ type Config struct {
 	ScanLimit    int64
 	ScanTimeout  time.Duration
 	ScanInterval time.Duration
+
+	EFOMode bool // On/off the Enhanced Fan-Out feature.
+
+	// This config is used for how to manage sequence number.
+	Commit *CommitConfig
+}
+
+// CommitConfig holds options for how to offset handled.
+type CommitConfig struct {
+	// Whether to auto-commit updated sequence number. (default is true)
+	Auto bool
+
+	// How frequently to commit updated sequence numbers. (default is 5s)
+	Interval time.Duration
+
+	// A Timeout config for commit per stream. (default is 2s)
+	Timeout time.Duration
+}
+
+// NewDefaultCommitConfig returns a new default offset management configuration.
+func NewDefaultCommitConfig() *CommitConfig {
+	return &CommitConfig{
+		Auto:     true,
+		Interval: defaultCommitInterval,
+		Timeout:  defaultCommitTimeout,
+	}
 }
 
 // Record represents kinesis.Record with stream name.
 type Record struct {
-	Stream string
+	Stream  string
+	ShardID string
 	*kinesis.Record
 }
 
@@ -123,6 +157,8 @@ type Kinesumer struct {
 	shards map[string]Shards
 	// To cache the last sequence numbers for each shard.
 	checkPoints map[string]*sync.Map
+	// offsets holds uncommitted sequence numbers.
+	offsets map[string]*sync.Map
 	// To manage the next shard iterators for each shard.
 	nextIters map[string]*sync.Map
 
@@ -134,6 +170,11 @@ type Kinesumer struct {
 	scanInterval time.Duration
 
 	started chan struct{}
+
+	// commit options.
+	autoCommit     bool
+	commitTimeout  time.Duration
+	commitInterval time.Duration
 
 	// To wait the running consumer loops when stopping.
 	wait sync.WaitGroup
@@ -196,6 +237,10 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 		)
 	}
 
+	if cfg.Commit == nil {
+		cfg.Commit = NewDefaultCommitConfig()
+	}
+
 	buffer := recordsChanBuffer
 	kinesumer := &Kinesumer{
 		id:           id,
@@ -209,6 +254,7 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 		shardCaches:  make(map[string][]string),
 		shards:       make(map[string]Shards),
 		checkPoints:  make(map[string]*sync.Map),
+		offsets:      make(map[string]*sync.Map),
 		nextIters:    make(map[string]*sync.Map),
 		scanLimit:    defaultScanLimit,
 		scanTimeout:  defaultScanTimeout,
@@ -233,6 +279,10 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 	if kinesumer.efoMode {
 		kinesumer.efoMeta = make(map[string]*efoMeta)
 	}
+
+	kinesumer.autoCommit = cfg.Commit.Auto
+	kinesumer.commitInterval = cfg.Commit.Interval
+	kinesumer.commitTimeout = cfg.Commit.Timeout
 
 	if err := kinesumer.init(); err != nil {
 		return nil, errors.WithStack(err)
@@ -422,6 +472,9 @@ func (k *Kinesumer) start() {
 		k.consumePolling()
 	}
 
+	if k.autoCommit {
+		go k.commitPeriodically()
+	}
 }
 
 func (k *Kinesumer) pause() {
@@ -450,65 +503,14 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 
 	streamEvents := make(chan kinesis.SubscribeToShardEventStreamEvent)
 
-	go func() {
-		defer close(streamEvents)
-
-		for {
-			ctx := context.Background()
-			ctx, cancel := context.WithCancel(ctx)
-
-			input := &kinesis.SubscribeToShardInput{
-				ConsumerARN: aws.String(k.efoMeta[stream].consumerARN),
-				ShardId:     aws.String(shard.ID),
-				StartingPosition: &kinesis.StartingPosition{
-					Type: aws.String(kinesis.ShardIteratorTypeLatest),
-				},
-			}
-
-			if seq, ok := k.checkPoints[stream].Load(shard.ID); ok {
-				input.StartingPosition.SetType(kinesis.ShardIteratorTypeAfterSequenceNumber)
-				input.StartingPosition.SetSequenceNumber(seq.(string))
-			}
-
-			output, err := k.client.SubscribeToShardWithContext(ctx, input)
-			if err != nil {
-				k.sendOrDiscardError(errors.WithStack(err))
-				cancel()
-				continue
-			}
-
-			open := true
-			for open {
-				select {
-				case <-k.stop:
-					output.GetEventStream().Close()
-					cancel()
-					return
-				case <-k.close:
-					output.GetEventStream().Close()
-					cancel()
-					return
-				case e, ok := <-output.GetEventStream().Events():
-					if !ok {
-						cancel()
-						open = false
-					}
-					streamEvents <- e
-				}
-			}
-		}
-	}()
-
-	var (
-		lastSequence     string
-		checkPointTicker = time.NewTicker(checkPointInterval)
-	)
+	go k.subscribeToShard(streamEvents, stream, shard)
 
 	for {
 		select {
 		case e, ok := <-streamEvents:
 			if !ok {
-				k.commitCheckPoint(stream, shard.ID, lastSequence)
+				k.Commit()
+				k.cleanupOffsets(stream, shard)
 				return
 			}
 			if se, ok := e.(*kinesis.SubscribeToShardEvent); ok {
@@ -518,40 +520,69 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 				}
 
 				for i, record := range se.Records {
-					k.records <- &Record{
-						Stream: stream,
-						Record: record,
+					r := &Record{
+						Stream:  stream,
+						ShardID: shard.ID,
+						Record:  record,
 					}
-					if i == n-1 {
-						lastSequence = *record.SequenceNumber
+					k.records <- r
+
+					if k.autoCommit && i == n-1 {
+						k.MarkRecord(r)
 					}
 				}
 			}
-		case <-checkPointTicker.C:
-			k.commitCheckPoint(stream, shard.ID, lastSequence)
 		}
 	}
 }
 
-// update checkpoint using sequence number.
-func (k *Kinesumer) commitCheckPoint(stream, shardID, lastSeqNum string) {
-	if lastSeqNum == "" {
-		// sequence number can't be empty.
-		return
-	}
+func (k *Kinesumer) subscribeToShard(streamEvents chan kinesis.SubscribeToShardEventStreamEvent, stream string, shard *Shard) {
+	defer close(streamEvents)
 
-	ctx := context.Background()
-	ctx, cancel := context.WithTimeout(ctx, checkPointTimeout)
-	defer cancel()
+	for {
+		ctx := context.Background()
+		ctx, cancel := context.WithCancel(ctx)
 
-	if err := k.stateStore.UpdateCheckPoint(ctx, stream, shardID, lastSeqNum); err != nil {
-		log.Err(err).
-			Str("stream", stream).
-			Str("shard id", shardID).
-			Str("missed sequence number", lastSeqNum).
-			Msg("kinesumer: failed to UpdateCheckPoint")
+		input := &kinesis.SubscribeToShardInput{
+			ConsumerARN: aws.String(k.efoMeta[stream].consumerARN),
+			ShardId:     aws.String(shard.ID),
+			StartingPosition: &kinesis.StartingPosition{
+				Type: aws.String(kinesis.ShardIteratorTypeLatest),
+			},
+		}
+
+		if seq, ok := k.checkPoints[stream].Load(shard.ID); ok {
+			input.StartingPosition.SetType(kinesis.ShardIteratorTypeAfterSequenceNumber)
+			input.StartingPosition.SetSequenceNumber(seq.(string))
+		}
+
+		output, err := k.client.SubscribeToShardWithContext(ctx, input)
+		if err != nil {
+			k.sendOrDiscardError(errors.WithStack(err))
+			cancel()
+			continue
+		}
+
+		open := true
+		for open {
+			select {
+			case <-k.stop:
+				output.GetEventStream().Close()
+				cancel()
+				return
+			case <-k.close:
+				output.GetEventStream().Close()
+				cancel()
+				return
+			case e, ok := <-output.GetEventStream().Events():
+				if !ok {
+					cancel()
+					open = false
+				}
+				streamEvents <- e
+			}
+		}
 	}
-	k.checkPoints[stream].Store(shardID, lastSeqNum)
 }
 
 /*
@@ -575,20 +606,42 @@ func (k *Kinesumer) consumeLoop(stream string, shard *Shard) {
 	for {
 		select {
 		case <-k.stop:
+			k.Commit()
 			return
 		case <-k.close:
+			k.Commit()
 			return
 		default:
 			time.Sleep(k.scanInterval)
-			if closed := k.consumeOnce(stream, shard); closed {
+			records, closed := k.consumeOnce(stream, shard)
+			if closed {
+				k.cleanupOffsets(stream, shard)
 				return // Close consume loop if shard is CLOSED and has no data.
+			}
+
+			n := len(records)
+			if n == 0 {
+				continue
+			}
+
+			for i, record := range records {
+				r := &Record{
+					Stream:  stream,
+					ShardID: shard.ID,
+					Record:  record,
+				}
+				k.records <- r
+
+				if k.autoCommit && i == n-1 {
+					k.MarkRecord(r)
+				}
 			}
 		}
 	}
 }
 
-// It returns a flag whether if shard is CLOSED state and has no remaining data.
-func (k *Kinesumer) consumeOnce(stream string, shard *Shard) bool {
+// It returns records & flag which is whether if shard is CLOSED state and has no remaining data.
+func (k *Kinesumer) consumeOnce(stream string, shard *Shard) ([]*kinesis.Record, bool) {
 	ctx := context.Background()
 	ctx, cancel := context.WithTimeout(ctx, k.scanTimeout)
 	defer cancel()
@@ -598,7 +651,7 @@ func (k *Kinesumer) consumeOnce(stream string, shard *Shard) bool {
 		k.sendOrDiscardError(errors.WithStack(err))
 
 		var riue *kinesis.ResourceInUseException
-		return errors.As(err, &riue)
+		return nil, errors.As(err, &riue)
 	}
 
 	output, err := k.client.GetRecordsWithContext(ctx, &kinesis.GetRecordsInput{
@@ -610,35 +663,23 @@ func (k *Kinesumer) consumeOnce(stream string, shard *Shard) bool {
 
 		var riue *kinesis.ResourceInUseException
 		if errors.As(err, &riue) {
-			return true
+			return nil, true
 		}
 		var eie *kinesis.ExpiredIteratorException
 		if errors.As(err, &eie) {
 			k.nextIters[stream].Delete(shard.ID) // Delete expired next iterator cache.
 		}
-		return false
+		return nil, false
 	}
 	defer k.nextIters[stream].Store(shard.ID, output.NextShardIterator) // Update iter.
 
 	n := len(output.Records)
 	// We no longer care about shards that have no records left and are in the "CLOSED" state.
 	if n == 0 {
-		return shard.Closed
+		return nil, shard.Closed
 	}
 
-	var lastSequence string
-	for i, record := range output.Records {
-		k.records <- &Record{
-			Stream: stream,
-			Record: record,
-		}
-		if i == n-1 {
-			lastSequence = *record.SequenceNumber
-		}
-	}
-
-	k.commitCheckPoint(stream, shard.ID, lastSequence)
-	return false
+	return output.Records, false
 }
 
 func (k *Kinesumer) getNextShardIterator(
@@ -664,6 +705,92 @@ func (k *Kinesumer) getNextShardIterator(
 	}
 	k.nextIters[stream].Store(shardID, output.ShardIterator)
 	return output.ShardIterator, nil
+}
+
+func (k *Kinesumer) commitPeriodically() {
+	var checkPointTicker = time.NewTicker(k.commitInterval)
+
+	for {
+		select {
+		case <-k.stop:
+			return
+		case <-k.close:
+			return
+		case <-checkPointTicker.C:
+			k.Commit()
+		}
+	}
+}
+
+// MarkRecord marks the provided record as consumed.
+func (k *Kinesumer) MarkRecord(record *Record) {
+	if record == nil {
+		k.sendOrDiscardError(errMarkNilRecord)
+		return
+	}
+
+	seqNum := *record.SequenceNumber
+	if seqNum == "" {
+		// sequence number can't be empty.
+		k.sendOrDiscardError(ErrEmptySequenceNumber)
+		return
+	}
+	if _, ok := k.checkPoints[record.Stream]; !ok {
+		k.sendOrDiscardError(ErrInvalidStream)
+		return
+	}
+	k.offsets[record.Stream].Store(record.ShardID, seqNum)
+}
+
+// Commit updates check point using current checkpoints.
+func (k *Kinesumer) Commit() {
+	var wg sync.WaitGroup
+	for stream := range k.shards {
+		wg.Add(1)
+
+		var checkpoints []*ShardCheckPoint
+		k.offsets[stream].Range(func(shardID, seqNum interface{}) bool {
+			checkpoints = append(checkpoints, &ShardCheckPoint{
+				Stream:         stream,
+				ShardID:        shardID.(string),
+				SequenceNumber: seqNum.(string),
+				UpdatedAt:      time.Now(),
+			})
+			return true
+		})
+
+		go func(stream string, checkpoints []*ShardCheckPoint) {
+			defer wg.Done()
+			k.commitCheckPointsPerStream(stream, checkpoints)
+		}(stream, checkpoints)
+	}
+	wg.Wait()
+}
+
+// commitCheckPointsPerStream updates checkpoints using sequence number.
+func (k *Kinesumer) commitCheckPointsPerStream(stream string, checkpoints []*ShardCheckPoint) {
+	if len(checkpoints) == 0 {
+		return
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), k.commitTimeout)
+	defer cancel()
+
+	if err := k.stateStore.UpdateCheckPoints(timeoutCtx, checkpoints); err != nil {
+		k.sendOrDiscardError(errors.Wrapf(err, "failed to commit on stream: %s", stream))
+		return
+	}
+}
+
+// cleanupOffsets remove uninterested stream's shard.
+// TODO(proost): how to remove unused stream?
+func (k *Kinesumer) cleanupOffsets(stream string, shard *Shard) {
+	if shard == nil {
+		return
+	}
+	if offsets, ok := k.offsets[stream]; ok {
+		offsets.Delete(shard.ID)
+	}
 }
 
 // Refresh refreshes the consuming streams.

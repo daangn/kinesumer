@@ -151,6 +151,9 @@ func (k *Kinesumer) syncShardInfoForStream(
 	if _, ok := k.checkPoints[stream]; !ok {
 		k.checkPoints[stream] = &sync.Map{}
 	}
+	if _, ok := k.offsets[stream]; !ok {
+		k.offsets[stream] = &sync.Map{}
+	}
 
 	// Delete uninterested shard ids.
 	k.checkPoints[stream].Range(func(key, _ interface{}) bool {
