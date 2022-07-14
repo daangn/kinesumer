@@ -84,8 +84,8 @@ type CommitConfig struct {
 	Timeout time.Duration
 }
 
-// NewDefaultCommitProperties returns a new default offset management configuration.
-func NewDefaultCommitProperties() *CommitConfig {
+// NewDefaultCommitConfig returns a new default offset management configuration.
+func NewDefaultCommitConfig() *CommitConfig {
 	return &CommitConfig{
 		Auto:     true,
 		Interval: defaultCommitInterval,
@@ -235,7 +235,7 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 	}
 
 	if cfg.Commit == nil {
-		cfg.Commit = NewDefaultCommitProperties()
+		cfg.Commit = NewDefaultCommitConfig()
 	}
 
 	buffer := recordsChanBuffer
