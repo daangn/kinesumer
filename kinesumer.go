@@ -42,6 +42,9 @@ var (
 	errMarkNilRecord          = errors.New("kinesumer: nil record can't be marked")
 )
 
+// WithSessionTraceFunc is a function that returns a new session with tracing.
+type WithSessionTraceFunc func(*session.Session) (*session.Session, error)
+
 // Config defines configs for the Kinesumer client.
 type Config struct {
 	App      string // Application name.
@@ -54,13 +57,15 @@ type Config struct {
 	// If you want to consume messages from Kinesis in a different account,
 	// you need to set up the IAM role to access to target account, and pass the role arn here.
 	// Reference: https://docs.aws.amazon.com/kinesisanalytics/latest/java/examples-cross.html.
-	RoleARN string
+	RoleARN                       string
+	KinesisClientSessionTraceFunc WithSessionTraceFunc
 
 	// State store configs.
-	StateStore       *StateStore
-	DynamoDBRegion   string
-	DynamoDBTable    string
-	DynamoDBEndpoint string // Only for local server.
+	StateStore                     *StateStore
+	DynamoDBRegion                 string
+	DynamoDBTable                  string
+	DynamoDBEndpoint               string // Only for local server.
+	DynamoDBClientSessionTraceFunc WithSessionTraceFunc
 
 	// These configs are not used in EFO mode.
 	ScanLimit    int64
@@ -224,6 +229,12 @@ func NewKinesumer(cfg *Config) (*Kinesumer, error) {
 	sess, err := session.NewSession(awsCfg)
 	if err != nil {
 		return nil, errors.WithStack(err)
+	}
+	if cfg.KinesisClientSessionTraceFunc != nil {
+		sess, err = cfg.KinesisClientSessionTraceFunc(sess)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
 	}
 
 	var cfgs []*aws.Config
