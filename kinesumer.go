@@ -571,6 +571,14 @@ func (k *Kinesumer) subscribeToShard(streamEvents chan kinesis.SubscribeToShardE
 
 		output, err := k.client.SubscribeToShardWithContext(ctx, input)
 		if err != nil {
+			var awsErr awserr.Error
+			if errors.As(err, &awsErr) {
+				if awsErr.Code() == kinesis.ErrCodeResourceInUseException {
+					subscribeStart = time.Now()
+					consumerARN = newConsumerARN
+				}
+			}
+
 			k.sendOrDiscardError(errors.WithStack(err))
 			cancel()
 			continue
