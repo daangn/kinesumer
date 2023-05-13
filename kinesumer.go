@@ -319,6 +319,27 @@ func (k *Kinesumer) listShards(stream string) (Shards, error) {
 			})
 		}
 	}
+
+	nextToken := output.NextToken
+	for nextToken != nil {
+		output, err := k.client.ListShards(&kinesis.ListShardsInput{
+			StreamName: aws.String(stream),
+			NextToken:  nextToken,
+		})
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+		for _, shard := range output.Shards {
+			// Skip CLOSED shards.
+			if shard.SequenceNumberRange.EndingSequenceNumber == nil {
+				shards = append(shards, &Shard{
+					ID:     *shard.ShardId,
+					Closed: shard.SequenceNumberRange.EndingSequenceNumber != nil,
+				})
+			}
+		}
+		nextToken = output.NextToken
+	}
 	return shards, nil
 }
 
