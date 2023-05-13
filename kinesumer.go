@@ -539,12 +539,17 @@ func (k *Kinesumer) consumePipe(stream string, shard *Shard) {
 func (k *Kinesumer) subscribeToShard(streamEvents chan kinesis.SubscribeToShardEventStreamEvent, stream string, shard *Shard) {
 	defer close(streamEvents)
 
+	var (
+		subscribeStart time.Time
+		consumerARN    string
+	)
 	for {
 		ctx := context.Background()
 		ctx, cancel := context.WithCancel(ctx)
 
+		newConsumerARN := k.efoMeta[stream].consumerARN
 		input := &kinesis.SubscribeToShardInput{
-			ConsumerARN: aws.String(k.efoMeta[stream].consumerARN),
+			ConsumerARN: aws.String(newConsumerARN),
 			ShardId:     aws.String(shard.ID),
 			StartingPosition: &kinesis.StartingPosition{
 				Type: aws.String(kinesis.ShardIteratorTypeLatest),
@@ -556,12 +561,22 @@ func (k *Kinesumer) subscribeToShard(streamEvents chan kinesis.SubscribeToShardE
 			input.StartingPosition.SetSequenceNumber(seq.(string))
 		}
 
+		// NOTE(proost): https://docs.aws.amazon.com/kinesis/latest/APIReference/API_SubscribeToShard.html
+		switch {
+		case subscribeStart.IsZero(): // first time.
+		case consumerARN != newConsumerARN: // consumer changed.
+		default:
+			time.Sleep(subscribeStart.Add(5 * time.Second).Sub(time.Now()))
+		}
+
 		output, err := k.client.SubscribeToShardWithContext(ctx, input)
 		if err != nil {
 			k.sendOrDiscardError(errors.WithStack(err))
 			cancel()
 			continue
 		}
+		subscribeStart = time.Now()
+		consumerARN = newConsumerARN
 
 		open := true
 		for open {
@@ -576,6 +591,10 @@ func (k *Kinesumer) subscribeToShard(streamEvents chan kinesis.SubscribeToShardE
 				return
 			case e, ok := <-output.GetEventStream().Events():
 				if !ok {
+					err := output.GetStream().Close()
+					if err != nil {
+						k.sendOrDiscardError(errors.WithStack(err))
+					}
 					cancel()
 					open = false
 				}
