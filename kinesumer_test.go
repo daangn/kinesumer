@@ -317,34 +317,30 @@ func TestShardsRebalancing(t *testing.T) {
 }
 
 func TestKinesumer_MarkRecordWorksFine(t *testing.T) {
-	env := newTestEnv(t)
-	defer env.cleanUp(t)
-
-	streams := []string{"events"}
-	_, err := env.client1.Consume(streams)
-	if err != nil {
-		t.Errorf("expected no errors, got %v", err)
+	kinesumer := &Kinesumer{
+		markRequestCh: make(chan *markRequest, 1),
+		checkPoints: map[string]*sync.Map{
+			"events": new(sync.Map),
+		},
 	}
+	kinesumer.MarkRecord(&Record{
+		Stream:  "events",
+		ShardID: "shard-000000000000",
+		Record: &kinesis.Record{
+			SequenceNumber: aws.String("12345"),
+		},
+	})
 
-	expectedSeqNum := "12345"
-	shardIDs := env.client1.shards["events"].ids()
-	for _, shardID := range shardIDs {
-		env.client1.MarkRecord(&Record{
-			Stream:  "events",
-			ShardID: shardID,
-			Record: &kinesis.Record{
-				SequenceNumber: &expectedSeqNum,
-			},
-		})
+	expected := &markRequest{
+		stream:         "events",
+		shardID:        "shard-000000000000",
+		sequenceNumber: "12345",
 	}
-
-	for _, shardID := range shardIDs {
-		resultSeqNum, ok := env.client1.offsets["events"].Load(shardID)
-		if ok {
-			assert.EqualValues(t, expectedSeqNum, resultSeqNum, "they should be equal")
-		} else {
-			t.Errorf("expected %v, got %v", expectedSeqNum, resultSeqNum)
-		}
+	select {
+	case req := <-kinesumer.markRequestCh:
+		assert.Equal(t, expected, req, "they should be equal")
+	case <-time.After(1 * time.Second):
+		assert.FailNow(t, "timeout")
 	}
 }
 
@@ -356,7 +352,7 @@ func TestKinesumer_MarkRecordFails(t *testing.T) {
 		wantErr   error
 	}{
 		{
-			name: "when input record is nil",
+			name: "when record record is nil",
 			kinesumer: &Kinesumer{
 				errors: make(chan error, 1),
 			},
@@ -372,10 +368,7 @@ func TestKinesumer_MarkRecordFails(t *testing.T) {
 				Stream:  "foobar",
 				ShardID: "shardId-000",
 				Record: &kinesis.Record{
-					SequenceNumber: func() *string {
-						emptyString := ""
-						return &emptyString
-					}(),
+					SequenceNumber: aws.String(""),
 				},
 			},
 			wantErr: ErrEmptySequenceNumber,
@@ -392,10 +385,7 @@ func TestKinesumer_MarkRecordFails(t *testing.T) {
 				Stream:  "foo",
 				ShardID: "shardId-000",
 				Record: &kinesis.Record{
-					SequenceNumber: func() *string {
-						seq := "0"
-						return &seq
-					}(),
+					SequenceNumber: aws.String("12345"),
 				},
 			},
 			wantErr: ErrInvalidStream,
@@ -409,6 +399,195 @@ func TestKinesumer_MarkRecordFails(t *testing.T) {
 			result := <-kinesumer.errors
 			assert.ErrorIs(t, result, tc.wantErr, "there should be an expected error")
 		})
+	}
+}
+
+func TestKinesumer_MarkRecordContextWorksFine(t *testing.T) {
+	kinesumer := &Kinesumer{
+		markRequestCh: make(chan *markRequest, 1),
+		checkPoints: map[string]*sync.Map{
+			"events": new(sync.Map),
+		},
+	}
+	kinesumer.MarkRecordContext(
+		context.Background(),
+		&Record{
+			Stream:  "events",
+			ShardID: "shard-000000000000",
+			Record: &kinesis.Record{
+				SequenceNumber: aws.String("12345"),
+			},
+		},
+	)
+
+	expected := &markRequest{
+		stream:         "events",
+		shardID:        "shard-000000000000",
+		sequenceNumber: "12345",
+	}
+	select {
+	case req := <-kinesumer.markRequestCh:
+		assert.Equal(t, expected, req, "they should be equal")
+	case <-time.After(1 * time.Second):
+		assert.FailNow(t, "timeout")
+	}
+}
+
+func TestKinesumer_MarkRecordContextFails(t *testing.T) {
+	testCases := []struct {
+		name      string
+		kinesumer *Kinesumer
+		input     struct {
+			ctx    context.Context
+			record *Record
+		}
+		wantErr error
+	}{
+		{
+			name: "when record record is nil",
+			kinesumer: &Kinesumer{
+				errors: make(chan error, 1),
+			},
+			input: struct {
+				ctx    context.Context
+				record *Record
+			}{
+				ctx:    context.Background(),
+				record: nil,
+			},
+			wantErr: errMarkNilRecord,
+		},
+		{
+			name: "when record sequence number is empty",
+			kinesumer: &Kinesumer{
+				errors: make(chan error, 1),
+			},
+			input: struct {
+				ctx    context.Context
+				record *Record
+			}{
+				ctx: context.Background(),
+				record: &Record{
+					Stream:  "foobar",
+					ShardID: "shardId-000",
+					Record: &kinesis.Record{
+						SequenceNumber: aws.String(""),
+					},
+				},
+			},
+			wantErr: ErrEmptySequenceNumber,
+		},
+		{
+			name: "when unknown stream is given",
+			kinesumer: &Kinesumer{
+				errors: make(chan error, 1),
+				checkPoints: map[string]*sync.Map{
+					"foobar": {},
+				},
+			},
+			input: struct {
+				ctx    context.Context
+				record *Record
+			}{
+				ctx: context.Background(),
+				record: &Record{
+					Stream:  "foo",
+					ShardID: "shardId-000",
+					Record: &kinesis.Record{
+						SequenceNumber: aws.String("12345"),
+					},
+				},
+			},
+			wantErr: ErrInvalidStream,
+		},
+		{
+			name: "when context is canceled",
+			kinesumer: &Kinesumer{
+				errors: make(chan error, 1),
+				checkPoints: map[string]*sync.Map{
+					"foobar": {},
+				},
+			},
+			input: struct {
+				ctx    context.Context
+				record *Record
+			}{
+				ctx: func() context.Context {
+					ctx, cancel := context.WithCancel(context.Background())
+					cancel()
+					return ctx
+				}(),
+				record: &Record{
+					Stream:  "foobar",
+					ShardID: "shardId-000",
+					Record: &kinesis.Record{
+						SequenceNumber: aws.String("12345"),
+					},
+				},
+			},
+			wantErr: errMarkTimeout,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			kinesumer := tc.kinesumer
+			kinesumer.MarkRecordContext(tc.input.ctx, tc.input.record)
+
+			result := <-kinesumer.errors
+			assert.ErrorIs(t, result, tc.wantErr, "there should be an expected error")
+		})
+	}
+}
+
+func TestKinesumer_markAndCommit(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mockStateStore := NewMockStateStore(ctrl)
+	mockStateStore.EXPECT().
+		UpdateCheckPoints(gomock.Any(), []*ShardCheckPoint{
+			{
+				Stream:         "events",
+				ShardID:        "shard-000000000000",
+				SequenceNumber: "67890",
+			},
+		}).
+		Times(1).
+		Return(nil)
+
+	kinesumer := &Kinesumer{
+		markRequestCh: make(chan *markRequest),
+		commit:        make(chan struct{}),
+		stateStore:    mockStateStore,
+	}
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		kinesumer.markAndCommit()
+
+		close(done)
+	}()
+
+	kinesumer.markRequestCh <- &markRequest{
+		stream:         "events",
+		shardID:        "shard-000000000000",
+		sequenceNumber: "12345",
+	}
+	kinesumer.markRequestCh <- &markRequest{
+		stream:         "events",
+		shardID:        "shard-000000000000",
+		sequenceNumber: "67890",
+	}
+	kinesumer.commit <- struct{}{}
+
+	close(kinesumer.commit)
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		assert.FailNow(t, "timed out waiting for markAndCommit to finish")
 	}
 }
 
@@ -480,12 +659,7 @@ func TestKinesumer_commitCheckPointPerStreamWorksFine(t *testing.T) {
 		Times(1).
 		Return(nil)
 
-	offsets := map[string]*sync.Map{}
-	offsets["foobar"] = &sync.Map{}
-	offsets["foobar"].Store("shardId-0", "0")
-	offsets["foobar"].Store("shardId-1", "1")
 	kinesumer := &Kinesumer{
-		offsets:       offsets,
 		commitTimeout: 2 * time.Second,
 		stateStore:    mockStateStore,
 	}
@@ -550,135 +724,87 @@ func TestKinesumer_commitCheckPointPerStreamFails(t *testing.T) {
 	}
 }
 
-func TestKinesumer_cleanupOffsetsWorksFine(t *testing.T) {
+func TestOffsets_merge(t *testing.T) {
 	testCases := []struct {
-		name         string
-		newKinesumer func() *Kinesumer
-		input        struct {
-			stream string
-			shard  *Shard
+		name    string
+		offsets *offsets
+		input   struct {
+			stream         string
+			shardID        string
+			sequenceNumber string
 		}
-		want map[string]map[string]string // stream - shard - sequence number
+		want *offsets
 	}{
 		{
-			name: "when clean up existing offset",
-			newKinesumer: func() *Kinesumer {
-				offsets := map[string]*sync.Map{}
-
-				offsets["foobar"] = &sync.Map{}
-				offsets["foobar"].Store("shardId-0", "0")
-
-				offsets["foo"] = &sync.Map{}
-				offsets["foo"].Store("shardId-1", "1")
-				return &Kinesumer{
-					offsets: offsets,
-				}
-			},
+			name:    "when merge new stream",
+			offsets: &offsets{},
 			input: struct {
-				stream string
-				shard  *Shard
+				stream         string
+				shardID        string
+				sequenceNumber string
 			}{
-				stream: "foobar",
-				shard: &Shard{
-					ID: "shardId-0",
+				stream:         "foobar",
+				shardID:        "shardId-0",
+				sequenceNumber: "0",
+			},
+			want: &offsets{
+				"foobar": {
+					"shardId-0": "0",
 				},
 			},
-			want: map[string]map[string]string{
-				"foo": {
+		},
+		{
+			name: "when merge new shard",
+			offsets: &offsets{
+				"foobar": map[string]string{
+					"shardId-0": "0",
+				},
+			},
+			input: struct {
+				stream         string
+				shardID        string
+				sequenceNumber string
+			}{
+				stream:         "foobar",
+				shardID:        "shardId-1",
+				sequenceNumber: "1",
+			},
+			want: &offsets{
+				"foobar": {
+					"shardId-0": "0",
 					"shardId-1": "1",
 				},
 			},
 		},
 		{
-			name: "when clean up non-existent stream",
-			newKinesumer: func() *Kinesumer {
-				offsets := map[string]*sync.Map{}
-
-				offsets["foobar"] = &sync.Map{}
-				offsets["foobar"].Store("shardId-0", "10")
-
-				offsets["foo"] = &sync.Map{}
-				offsets["foo"].Store("shardId-1", "20")
-				return &Kinesumer{
-					offsets: offsets,
-				}
+			name: "when merge new sequence number",
+			offsets: &offsets{
+				"foobar": map[string]string{
+					"shardId-0": "0",
+				},
 			},
 			input: struct {
-				stream string
-				shard  *Shard
+				stream         string
+				shardID        string
+				sequenceNumber string
 			}{
-				stream: "bar",
-				shard: &Shard{
-					ID: "shardId-2",
-				},
+				stream:         "foobar",
+				shardID:        "shardId-0",
+				sequenceNumber: "1",
 			},
-			want: map[string]map[string]string{
+			want: &offsets{
 				"foobar": {
-					"shardId-0": "10",
-				},
-				"foo": {
-					"shardId-1": "20",
-				},
-			},
-		},
-		{
-			name: "when clean up non-existent shard",
-			newKinesumer: func() *Kinesumer {
-				offsets := map[string]*sync.Map{}
-
-				offsets["foobar"] = &sync.Map{}
-				offsets["foobar"].Store("shardId-0", "10")
-
-				offsets["foo"] = &sync.Map{}
-				offsets["foo"].Store("shardId-1", "20")
-				return &Kinesumer{
-					offsets: offsets,
-				}
-			},
-			input: struct {
-				stream string
-				shard  *Shard
-			}{
-				stream: "foo",
-				shard: &Shard{
-					ID: "shardId-2",
-				},
-			},
-			want: map[string]map[string]string{
-				"foobar": {
-					"shardId-0": "10",
-				},
-				"foo": {
-					"shardId-1": "20",
+					"shardId-0": "1",
 				},
 			},
 		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			kinesumer := tc.newKinesumer()
-			kinesumer.cleanupOffsets(tc.input.stream, tc.input.shard)
+			o := tc.offsets
+			o.merge(tc.input.stream, tc.input.shardID, tc.input.sequenceNumber)
 
-			result := make(map[string]map[string]string)
-			for stream, offsets := range kinesumer.offsets {
-				streamResult := make(map[string]string)
-				offsets.Range(func(shardID, sequence interface{}) bool {
-					streamResult[shardID.(string)] = sequence.(string)
-					return true
-				})
-				result[stream] = streamResult
-			}
-
-			for stream, expectedInStream := range tc.want {
-				if assert.NotEmpty(t, result[stream]) {
-					streamResult := result[stream]
-					for expectedShardID, expectedSeqNum := range expectedInStream {
-						if assert.NotEmpty(t, streamResult[expectedShardID]) {
-							assert.EqualValues(t, streamResult[expectedShardID], expectedSeqNum, "they should be equal")
-						}
-					}
-				}
-			}
+			assert.Equal(t, tc.want, o, "they should be equal")
 		})
 	}
 }
