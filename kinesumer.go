@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/spf13/cast"
 	"github.com/tazapay/grpc-framework/client/session"
 	"github.com/tazapay/grpc-framework/env"
 	"github.com/tazapay/grpc-framework/logger"
@@ -33,6 +34,8 @@ const (
 	defaultScanInterval = 1 * time.Second
 
 	recordsChanBuffer = 20
+
+	ctxIsRegionSwitch = "IS_REGION_SWITCH"
 )
 
 // Error codes.
@@ -734,7 +737,10 @@ func (k *Kinesumer) getNextShardIterator(
 		input.ShardIteratorType = types.ShardIteratorTypeAfterSequenceNumber
 		seqNo := seq.(string)
 		input.StartingSequenceNumber = &seqNo
-	} else {
+	} else if (env.Get(env.Environment) != env.Prod && env.Get(env.Environment) != env.Sandbox) ||
+		cast.ToBool(env.Get(ctxIsRegionSwitch)) {
+		// If env is not prod or sandbox, use TRIM_HORIZON when sequence number is not found.
+		// or if it's region switch context, use TRIM_HORIZON to reprocess all records.
 		input.ShardIteratorType = types.ShardIteratorTypeTrimHorizon
 	}
 
