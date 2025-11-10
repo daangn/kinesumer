@@ -649,8 +649,7 @@ func (k *Kinesumer) consumeLoop(stream string, shard *Shard) {
 			}
 
 			// Closed shard may have remaining data,
-			// so clean up is executed,
-			// once the records are pushed to the channel.
+			// so clean up is executed, once the records are pushed to the channel.
 			if closed {
 				k.cleanupOffsets(stream, shard)
 				return // Close consume loop if shard is CLOSED and has no data.
