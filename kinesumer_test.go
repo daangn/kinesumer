@@ -682,3 +682,43 @@ func TestKinesumer_cleanupOffsetsWorksFine(t *testing.T) {
 		})
 	}
 }
+
+func Test_getShardStatus(t *testing.T) {
+	tests := []struct {
+		name  string // description of this test case
+		input struct {
+			output *kinesis.GetRecordsOutput
+		}
+		want bool
+	}{
+		{
+			name: "when shard is closed",
+			input: struct {
+				output *kinesis.GetRecordsOutput
+			}{
+				output: &kinesis.GetRecordsOutput{
+					NextShardIterator: nil,
+				},
+			},
+			want: true,
+		},
+
+		{
+			name: "when shard is open",
+			input: struct {
+				output *kinesis.GetRecordsOutput
+			}{
+				output: &kinesis.GetRecordsOutput{
+					NextShardIterator: aws.String("shardIterator"),
+				},
+			},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := getShardStatus(tt.input.output)
+			assert.Equal(t, tt.want, got, "Should be equal")
+		})
+	}
+}

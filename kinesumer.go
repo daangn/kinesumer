@@ -693,14 +693,19 @@ func (k *Kinesumer) consumeOnce(stream string, shard *Shard) ([]*kinesis.Record,
 	}
 	defer k.nextIters[stream].Store(shard.ID, output.NextShardIterator) // Update iter.
 
-	// set the shard closed state.
-	// If shard has no data, NextShardIterator will be nil.
-	// Reference: https://docs.aws.amazon.com/cli/latest/reference/kinesis/get-records.html#output
-	shard.Closed = output.NextShardIterator == nil
+	shard.Closed = getShardStatus(output)
 
 	// outer function has the for loop that takes care of the empty records case
 	// so not needed to check it here.
 	return output.Records, shard.Closed
+}
+
+// getShardStatus returns whether the shard is closed or not.
+func getShardStatus(output *kinesis.GetRecordsOutput) bool {
+	// set the shard closed state.
+	// If shard has no data, NextShardIterator will be nil.
+	// Reference: https://docs.aws.amazon.com/cli/latest/reference/kinesis/get-records.html#output
+	return output.NextShardIterator == nil
 }
 
 func (k *Kinesumer) getNextShardIterator(
