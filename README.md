@@ -23,7 +23,6 @@ Kinesumer manages the state of the distributed clients with a database, called "
 ### If your Kinesis stream is in different account
 
 > If you want to connect to Kinesis in a different account, you need to set up the IAM role to access to the target account, and pass the role arn (`kinesumer.Config.RoleARN`) when initialze the Kinesumer client: [Reference](https://docs.aws.amazon.com/kinesisanalytics/latest/java/examples-cross.html).
-> 
 
 ## Usage
 
@@ -91,4 +90,3 @@ Following explains how the Kinesumer works:
 ## License
 
 See [LICENSE](./LICENSE).
-
