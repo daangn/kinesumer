@@ -55,6 +55,13 @@ func newStateStore(cfg *Config) (StateStore, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "kinesumer: failed to create an aws session")
 	}
+	if cfg.DynamoDBClientSessionTraceFunc != nil {
+		sess, err = cfg.DynamoDBClientSessionTraceFunc(sess)
+		if err != nil {
+			return nil, errors.Wrap(err, "kinesumer: failed to trace an aws session")
+		}
+	}
+
 	// Ping-like request to check if client can reach to DynamoDB.
 	client := dynamo.New(sess)
 	table := client.Table(cfg.DynamoDBTable)
