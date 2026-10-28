@@ -123,10 +123,28 @@ func (k *Kinesumer) syncShardInfoForStream(
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
-	// Update client shard ids.
-	k.pause() // Pause the current consuming jobs before update shards.
+	// Pause current workers so their final commits are included in the checkpoint snapshot.
+	hasPreviousAssignments := len(k.shards) > 0
+	if hasPreviousAssignments {
+		k.pause()
+	}
+
+	// Load checkpoint state before publishing the new assignment.
+	shardIDs := newShards.ids()
+	seqMap, err := k.stateStore.ListCheckPoints(ctx, stream, shardIDs)
+	if err != nil {
+		if hasPreviousAssignments {
+			k.start() // Resume only the previous, complete assignments.
+		}
+		return errors.WithStack(err)
+	}
+	if !hasPreviousAssignments {
+		// Stop an empty-assignment commit loop before starting the new workers.
+		k.pause()
+	}
+	defer k.start() // Re-start the consuming jobs after the new assignment is complete.
+
 	k.shards[stream] = newShards
-	defer k.start() // Re-start the consuming jobs with updated shards.
 
 	// Sync next iterators map.
 	if _, ok := k.nextIters[stream]; !ok {
@@ -134,19 +152,12 @@ func (k *Kinesumer) syncShardInfoForStream(
 	}
 
 	// Delete uninterested shard ids.
-	shardIDs := k.shards[stream].ids()
 	k.nextIters[stream].Range(func(key, _ interface{}) bool {
 		if !collection.ContainsS(shardIDs, key.(string)) {
 			k.nextIters[stream].Delete(key)
 		}
 		return true
 	})
-
-	// Sync shard check points.
-	seqMap, err := k.stateStore.ListCheckPoints(ctx, stream, shardIDs)
-	if err != nil {
-		return errors.WithStack(err)
-	}
 
 	if _, ok := k.checkPoints[stream]; !ok {
 		k.checkPoints[stream] = &sync.Map{}
