@@ -123,8 +123,16 @@ func (k *Kinesumer) syncShardInfoForStream(
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
+	if !k.efoMode && k.isClosed() {
+		return nil
+	}
+
 	// Update client shard ids.
 	k.pause() // Pause the current consuming jobs before update shards.
+	if !k.efoMode {
+		k.commitMu.Lock()
+		defer k.commitMu.Unlock()
+	}
 	k.shards[stream] = newShards
 	defer k.start() // Re-start the consuming jobs with updated shards.
 

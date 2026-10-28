@@ -176,12 +176,13 @@ type Kinesumer struct {
 	commitTimeout  time.Duration
 	commitInterval time.Duration
 
-	// To wait the running consumer loops when stopping.
+	// To wait for consumer workers and the polling periodic commit loop when stopping.
 	wait sync.WaitGroup
 	stop chan struct{}
 	// Lock for pausing and starting.
-	mu    *sync.Mutex
-	close chan struct{}
+	mu       *sync.Mutex
+	commitMu sync.RWMutex
+	close    chan struct{}
 }
 
 // NewKinesumer initializes and returns a new Kinesumer client.
@@ -494,13 +495,20 @@ func (k *Kinesumer) start() {
 	}
 
 	if k.autoCommit {
-		go k.commitPeriodically()
+		if k.efoMode {
+			go k.commitPeriodically()
+		} else {
+			k.wait.Add(1)
+			go func() {
+				defer k.wait.Done()
+				k.commitPeriodically()
+			}()
+		}
 	}
 }
 
 func (k *Kinesumer) pause() {
 	close(k.stop)
-
 	k.wait.Wait()
 }
 
@@ -627,10 +635,10 @@ func (k *Kinesumer) consumeLoop(stream string, shard *Shard) {
 	for {
 		select {
 		case <-k.stop:
-			k.Commit()
+			k.commitPollingShard(stream, shard.ID)
 			return
 		case <-k.close:
-			k.Commit()
+			k.commitPollingShard(stream, shard.ID)
 			return
 		default:
 			time.Sleep(k.scanInterval)
@@ -765,12 +773,52 @@ func (k *Kinesumer) MarkRecord(record *Record) {
 
 // Commit updates check point using current checkpoints.
 func (k *Kinesumer) Commit() {
+	if k.efoMode {
+		k.commitCheckPoints()
+		return
+	}
+	k.commitMu.Lock()
+	defer k.commitMu.Unlock()
+
+	k.commitCheckPoints()
+}
+
+// commitPollingShard persists the assigned shard when a polling worker stops.
+func (k *Kinesumer) commitPollingShard(stream, shardID string) {
+	k.commitMu.RLock()
+	defer k.commitMu.RUnlock()
+
+	var checkpoints []*ShardCheckPoint
+	if offsets := k.offsets[stream]; offsets != nil {
+		if seqNum, ok := offsets.Load(shardID); ok {
+			checkpoints = append(checkpoints, &ShardCheckPoint{
+				Stream:         stream,
+				ShardID:        shardID,
+				SequenceNumber: seqNum.(string),
+				UpdatedAt:      time.Now(),
+			})
+		}
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		k.commitCheckPointsPerStream(stream, checkpoints)
+	}()
+	wg.Wait()
+}
+
+func (k *Kinesumer) commitCheckPoints() {
 	var wg sync.WaitGroup
 	for stream := range k.shards {
+		offsets := k.offsets[stream]
+		if offsets == nil {
+			continue
+		}
 		wg.Add(1)
 
 		var checkpoints []*ShardCheckPoint
-		k.offsets[stream].Range(func(shardID, seqNum interface{}) bool {
+		offsets.Range(func(shardID, seqNum interface{}) bool {
 			checkpoints = append(checkpoints, &ShardCheckPoint{
 				Stream:         stream,
 				ShardID:        shardID.(string),
@@ -819,6 +867,10 @@ func (k *Kinesumer) Refresh(streams []string) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
+	if !k.efoMode && k.isClosed() {
+		return
+	}
+
 	k.pause()
 	// TODO(mingrammer): Deregister the EFO consumers.
 
@@ -845,11 +897,19 @@ func (k *Kinesumer) sendOrDiscardError(err error) {
 
 // Close stops the consuming and sync jobs.
 func (k *Kinesumer) Close() {
+	if !k.efoMode {
+		k.mu.Lock()
+	}
+
 	log.Info().
 		Msg("kinesumer: closing the kinesumer")
-	close(k.close)
-
-	k.wait.Wait()
+	if k.efoMode {
+		close(k.close)
+		k.wait.Wait()
+	} else {
+		k.pause()
+		close(k.close)
+	}
 
 	// Client should drain the remaining records.
 	close(k.records)
@@ -862,8 +922,21 @@ func (k *Kinesumer) Close() {
 
 	// TODO(mingrammer): Deregister the EFO consumers.
 
+	if !k.efoMode {
+		k.mu.Unlock()
+	}
+
 	// Wait last sync jobs.
 	time.Sleep(syncTimeout)
 	log.Info().
 		Msg("kinesumer: shutdown successfully")
+}
+
+func (k *Kinesumer) isClosed() bool {
+	select {
+	case <-k.close:
+		return true
+	default:
+		return false
+	}
 }
