@@ -141,6 +141,13 @@ func (k *Kinesumer) syncShardInfoForStream(
 		}
 		return true
 	})
+	k.pendingRecords.Range(func(key, _ interface{}) bool {
+		pendingKey := key.(pendingRecordsKey)
+		if pendingKey.stream == stream && !collection.ContainsS(shardIDs, pendingKey.shardID) {
+			k.pendingRecords.Delete(key)
+		}
+		return true
+	})
 
 	// Sync shard check points.
 	seqMap, err := k.stateStore.ListCheckPoints(ctx, stream, shardIDs)

@@ -101,6 +101,11 @@ type Record struct {
 	*kinesis.Record
 }
 
+type pendingRecordsKey struct {
+	stream  string
+	shardID string
+}
+
 // Shard holds shard id and a flag of "CLOSED" state.
 type Shard struct {
 	ID     string
@@ -161,6 +166,8 @@ type Kinesumer struct {
 	offsets map[string]*sync.Map
 	// To manage the next shard iterators for each shard.
 	nextIters map[string]*sync.Map
+	// Records not sent before a polling worker was stopped.
+	pendingRecords sync.Map
 
 	// Maximum count of records to scan.
 	scanLimit int64
@@ -624,6 +631,7 @@ func (k *Kinesumer) consumePolling() {
 func (k *Kinesumer) consumeLoop(stream string, shard *Shard) {
 	defer k.wait.Done()
 
+	key := pendingRecordsKey{stream: stream, shardID: shard.ID}
 	for {
 		select {
 		case <-k.stop:
@@ -633,32 +641,52 @@ func (k *Kinesumer) consumeLoop(stream string, shard *Shard) {
 			k.Commit()
 			return
 		default:
+		}
+
+		var records []*kinesis.Record
+		if pending, ok := k.pendingRecords.LoadAndDelete(key); ok {
+			records = pending.([]*kinesis.Record)
+		} else {
 			time.Sleep(k.scanInterval)
-			records, closed := k.consumeOnce(stream, shard)
+			var closed bool
+			records, closed = k.consumeOnce(stream, shard)
 			if closed {
 				k.cleanupOffsets(stream, shard)
 				return // Close consume loop if shard is CLOSED and has no data.
 			}
+		}
 
-			n := len(records)
-			if n == 0 {
-				continue
-			}
+		if len(records) == 0 {
+			continue
+		}
+		if !k.sendRecords(stream, shard, records) {
+			k.Commit()
+			return
+		}
+	}
+}
 
-			for i, record := range records {
-				r := &Record{
-					Stream:  stream,
-					ShardID: shard.ID,
-					Record:  record,
-				}
-				k.records <- r
-
-				if k.autoCommit && i == n-1 {
-					k.MarkRecord(r)
-				}
+func (k *Kinesumer) sendRecords(stream string, shard *Shard, records []*kinesis.Record) bool {
+	key := pendingRecordsKey{stream: stream, shardID: shard.ID}
+	for i, record := range records {
+		r := &Record{
+			Stream:  stream,
+			ShardID: shard.ID,
+			Record:  record,
+		}
+		select {
+		case <-k.stop:
+			k.pendingRecords.Store(key, records[i:])
+			return false
+		case <-k.close:
+			return false
+		case k.records <- r:
+			if k.autoCommit && i == len(records)-1 {
+				k.MarkRecord(r)
 			}
 		}
 	}
+	return true
 }
 
 // It returns records & flag which is whether if shard is CLOSED state and has no remaining data.
